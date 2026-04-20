@@ -6,6 +6,7 @@ const { URL } = require("url");
 loadDotEnv();
 
 const PORT = Number(process.env.PORT || 3000);
+const HOST = process.env.HOST || "0.0.0.0";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini";
 const ROOT = __dirname;
@@ -101,8 +102,8 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, "127.0.0.1", () => {
-  console.log(`Deutsch Trainer server running on http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Deutsch Trainer server running on http://${HOST}:${PORT}`);
 });
 
 async function generateSession(body) {
