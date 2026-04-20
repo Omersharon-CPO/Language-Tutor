@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Deutsch Trainer</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Fraunces:opsz,wght@9..144,600;9..144,700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Adaptive German coaching</p>
+          <div id="ai-status" class="ai-status ai-status-muted">AI status checking...</div>
+          <h1>Deutsch Trainer</h1>
+          <p class="hero-text">
+            Finish lessons, get graded, and let the app choose the next move
+            based on your level, strengths, and weak spots. The path follows CEFR
+            milestones from A1 upward.
+          </p>
+          <div class="hero-actions">
+            <button id="study-now" class="primary-button">Start recommended lesson</button>
+            <button id="reset-progress" class="ghost-button">Reset learner profile</button>
+          </div>
+        </div>
+        <div class="hero-card">
+          <p class="card-label">Learner snapshot</p>
+          <div class="stat-grid">
+            <article>
+              <span id="current-band">A1</span>
+              <p>Current band</p>
+            </article>
+            <article>
+              <span id="streak-count">0</span>
+              <p>Day streak</p>
+            </article>
+            <article>
+              <span id="accuracy-count">0%</span>
+              <p>Overall accuracy</p>
+            </article>
+          </div>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="panel briefing-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Recommended next</p>
+              <h2 id="recommended-title">A1 lesson</h2>
+            </div>
+            <span id="recommended-pill" class="pill">Lesson</span>
+          </div>
+          <p id="recommended-description" class="lesson-description"></p>
+          <p id="recommended-reason" class="note emphasis"></p>
+          <div id="recommended-focus" class="chip-row"></div>
+          <div class="trainer-actions top-gap">
+            <button id="start-recommended" class="primary-button">Begin session</button>
+          </div>
+          <div class="split-insights top-gap">
+            <article class="mini-card">
+              <p class="prompt-label">Strong spots</p>
+              <div id="strong-spots" class="spot-list"></div>
+            </article>
+            <article class="mini-card">
+              <p class="prompt-label">Needs work</p>
+              <div id="weak-spots" class="spot-list"></div>
+            </article>
+          </div>
+        </section>
+
+        <section class="panel roadmap-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">CEFR dashboard</p>
+              <h2>Course roadmap</h2>
+            </div>
+          </div>
+          <div id="level-roadmap" class="roadmap"></div>
+        </section>
+
+        <section class="panel session-panel wide-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Session</p>
+              <h2 id="session-heading">Ready when you are</h2>
+            </div>
+            <span id="session-pill" class="pill">Idle</span>
+          </div>
+
+          <div id="session-empty" class="empty-state">
+            <p>
+              Start the recommended session to practice one focused lesson or a
+              qualification test. Each completed session updates your profile and
+              recalculates the next best lesson.
+            </p>
+          </div>
+
+          <div id="session-active" class="hidden">
+            <p id="session-description" class="lesson-description"></p>
+            <div id="session-focus" class="chip-row"></div>
+            <div class="split-insights">
+              <article class="mini-card">
+                <p class="prompt-label">Key takeaways</p>
+                <div id="session-points" class="lesson-points compact"></div>
+              </article>
+              <article class="mini-card">
+                <p class="prompt-label">Grammar focus</p>
+                <h3 id="grammar-title" class="subheading"></h3>
+                <p id="grammar-explanation" class="grammar-copy"></p>
+                <div id="grammar-examples" class="grammar-examples"></div>
+              </article>
+            </div>
+
+            <div class="quiz-card top-gap">
+              <div class="panel-header tight">
+                <div>
+                  <p class="prompt-label">Challenge</p>
+                  <h3 id="challenge-prompt"></h3>
+                </div>
+                <span id="challenge-progress" class="pill">1 / 3</span>
+              </div>
+              <p id="challenge-skill" class="note"></p>
+              <p id="challenge-mode" class="prompt-label challenge-mode"></p>
+              <div id="challenge-options" class="options"></div>
+              <form id="challenge-form" class="challenge-form hidden">
+                <label class="sr-only" for="challenge-input">Type your answer</label>
+                <input id="challenge-input" class="challenge-input" type="text" autocomplete="off" />
+                <button id="submit-answer" type="submit" class="primary-button">Check answer</button>
+              </form>
+              <div id="challenge-status" class="challenge-status hidden">Waiting</div>
+              <p id="challenge-feedback" class="feedback"></p>
+              <div class="trainer-actions">
+                <button id="next-challenge" class="ghost-button" disabled>Next prompt</button>
+              </div>
+            </div>
+          </div>
+
+          <div id="session-result" class="hidden result-card">
+            <p class="prompt-label">Session report</p>
+            <h3 id="result-title" class="result-score"></h3>
+            <p id="result-summary" class="lesson-description"></p>
+            <div class="split-insights">
+              <article class="mini-card">
+                <p class="prompt-label">Strong this round</p>
+                <div id="result-strong" class="spot-list"></div>
+              </article>
+              <article class="mini-card">
+                <p class="prompt-label">Train next</p>
+                <div id="result-weak" class="spot-list"></div>
+              </article>
+            </div>
+            <div id="result-actions" class="trainer-actions top-gap">
+              <button id="result-primary" class="primary-button">Continue</button>
+              <button id="result-secondary" class="ghost-button">Repeat session</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="panel qualification-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Milestones</p>
+              <h2>Qualification tests</h2>
+            </div>
+          </div>
+          <p class="lesson-description">
+            When your lesson performance is strong enough, a milestone test appears
+            as the recommended next session and can unlock the next CEFR band.
+          </p>
+          <div id="qualification-list" class="qualification-list"></div>
+        </section>
+
+        <section class="panel history-panel">
+          <div class="panel-header">
+            <div>
+              <p class="eyebrow">Recent performance</p>
+              <h2>Adaptation notes</h2>
+            </div>
+          </div>
+          <div id="history-list" class="history-list"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
