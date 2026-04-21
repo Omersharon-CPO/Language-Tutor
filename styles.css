@@ -430,6 +430,37 @@ h2 {
   margin: 0 0 12px;
 }
 
+.remediation-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0 0 12px;
+}
+
+.remediation-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 999px;
+  background: rgba(209, 91, 52, 0.1);
+  color: var(--accent-deep);
+  border: 1px solid rgba(209, 91, 52, 0.18);
+  font-size: 0.9rem;
+}
+
+.remediation-pill.active {
+  background: rgba(154, 106, 22, 0.12);
+  color: var(--warning);
+  border-color: rgba(154, 106, 22, 0.22);
+}
+
+.remediation-pill.done {
+  background: var(--success-soft);
+  color: var(--success);
+  border-color: rgba(47, 125, 74, 0.2);
+}
+
 .challenge-form {
   display: flex;
   gap: 12px;

@@ -140,6 +140,23 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "POST" && url.pathname === "/api/generate-drilldown") {
+      const body = await readJsonBody(req);
+      if (!OPENAI_API_KEY) {
+        return sendJson(res, 200, {
+          ok: false,
+          fallback: true,
+          reason: "Missing OPENAI_API_KEY"
+        });
+      }
+
+      const drilldown = await generateDrilldown(body);
+      return sendJson(res, 200, {
+        ok: true,
+        drilldown
+      });
+    }
+
     if (req.method === "POST" && url.pathname === "/api/estimate-level") {
       const body = await readJsonBody(req);
       if (!OPENAI_API_KEY) {
@@ -313,6 +330,34 @@ async function gradeAnswer(body) {
           type: "array",
           items: { type: "string" }
         },
+        remediationTopics: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              key: {
+                type: "string",
+                enum: [
+                  "spelling",
+                  "capitalization",
+                  "article_case",
+                  "word_order",
+                  "verb_form",
+                  "preposition",
+                  "gender",
+                  "register",
+                  "meaning"
+                ]
+              },
+              title: { type: "string" },
+              whyItMatters: { type: "string" },
+              learnerPattern: { type: "string" },
+              skill: { type: "string", enum: ["vocabulary", "grammar", "listening", "speaking", "reading"] }
+            },
+            required: ["key", "title", "whyItMatters", "learnerPattern", "skill"]
+          }
+        },
         skillImpact: {
           type: "object",
           additionalProperties: false,
@@ -326,16 +371,116 @@ async function gradeAnswer(body) {
           required: ["vocabulary", "grammar", "listening", "speaking", "reading"]
         }
       },
-      required: ["correct", "score", "feedback", "idealAnswer", "errorTypes", "skillImpact"]
+      required: ["correct", "score", "feedback", "idealAnswer", "errorTypes", "remediationTopics", "skillImpact"]
     }
   };
 
   const instructions = [
     "You are grading a learner's German exercise response.",
-    "Grade leniently for punctuation and capitalization, but not for meaning-changing grammar or wrong vocabulary.",
+    "Identify the real origin of the learner's mistake, not just whether it is wrong.",
+    "Separate root causes such as spelling, capitalization, article/case choice, word order, verb form, register, gender, preposition, or meaning.",
+    "If the learner has two distinct weak spots, return two remediationTopics.",
+    "Grade leniently for punctuation, but treat capitalization or spelling as real issues when they reveal a learnable weak spot.",
     "If the response is close but flawed, set correct=false and score between 40 and 79.",
-    "Return concise feedback that sounds like a tutor, not an examiner.",
+    "Return concise feedback that sounds like a tutor, not an examiner, and mention the specific weak spots.",
     "Skill impact should be small integers between -6 and 6."
+  ].join(" ");
+
+  const input = [
+    {
+      role: "user",
+      content: [
+        {
+          type: "input_text",
+          text: JSON.stringify(body)
+        }
+      ]
+    }
+  ];
+
+  return callOpenAIStructured({ instructions, input, schema });
+}
+
+async function generateDrilldown(body) {
+  const schema = {
+    name: "german_drilldown",
+    strict: true,
+    schema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        topics: {
+          type: "array",
+          items: {
+            type: "object",
+            additionalProperties: false,
+            properties: {
+              topicKey: { type: "string" },
+              title: { type: "string" },
+              description: { type: "string" },
+              skill: { type: "string", enum: ["vocabulary", "grammar", "listening", "speaking", "reading"] },
+              challenges: {
+                type: "array",
+                items: {
+                  type: "object",
+                  additionalProperties: false,
+                  properties: {
+                    id: { type: "string" },
+                    type: { type: "string", enum: ["choice", "text"] },
+                    prompt: { type: "string" },
+                    skill: { type: "string", enum: ["vocabulary", "grammar", "listening", "speaking", "reading"] },
+                    explanation: { type: "string" },
+                    answer: { type: "string" },
+                    acceptedAnswers: {
+                      type: "array",
+                      items: { type: "string" }
+                    },
+                    options: {
+                      anyOf: [
+                        {
+                          type: "array",
+                          items: { type: "string" }
+                        },
+                        { type: "null" }
+                      ]
+                    },
+                    placeholder: {
+                      anyOf: [
+                        { type: "string" },
+                        { type: "null" }
+                      ]
+                    }
+                  },
+                  required: [
+                    "id",
+                    "type",
+                    "prompt",
+                    "skill",
+                    "explanation",
+                    "answer",
+                    "acceptedAnswers",
+                    "options",
+                    "placeholder"
+                  ]
+                }
+              }
+            },
+            required: ["topicKey", "title", "description", "skill", "challenges"]
+          }
+        }
+      },
+      required: ["topics"]
+    }
+  };
+
+  const instructions = [
+    "You are building targeted German remediation drills after a learner mistake.",
+    "Each topic is one rabbit-hole track focused on one weak spot only.",
+    "For each topic, return exactly 5 short challenges.",
+    "Prefer text challenges, but choice challenges are allowed when useful.",
+    "Every challenge must directly train the detected issue and be easy to grade.",
+    "Keep content CEFR-appropriate to the learner context.",
+    "Use varied prompts so the learner cannot just memorize one surface pattern."
   ].join(" ");
 
   const input = [

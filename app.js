@@ -830,6 +830,7 @@ const els = {
   challengePrompt: document.getElementById("challenge-prompt"),
   challengeSkill: document.getElementById("challenge-skill"),
   challengeMode: document.getElementById("challenge-mode"),
+  remediationStatus: document.getElementById("remediation-status"),
   challengeProgress: document.getElementById("challenge-progress"),
   challengeOptions: document.getElementById("challenge-options"),
   challengeForm: document.getElementById("challenge-form"),
@@ -1530,13 +1531,22 @@ function renderSessionContent(session) {
 
 function renderChallenge() {
   const session = state.activeSession;
+  pruneResolvedRemediationChallenges(session);
   const challenge = session.challenges[session.challengeIndex];
   const isLastChallenge = session.challengeIndex === session.challenges.length - 1;
   els.challengePrompt.textContent = challenge.prompt;
-  els.challengeSkill.textContent = `Training ${skillLabels[challenge.skill]}`;
+  const remediationTopic = challenge.remediationTopicId ? session.remediation.topics[challenge.remediationTopicId] : null;
+  els.challengeSkill.textContent = remediationTopic
+    ? `Deep dive: ${remediationTopic.title}`
+    : `Training ${skillLabels[challenge.skill]}`;
   els.challengeMode.textContent =
-    challenge.type === "text" ? "Type your answer" : "Choose the best answer";
+    remediationTopic
+      ? `Clear this weak spot with ${remediationTopic.targetStreak} correct answers in a row`
+      : challenge.type === "text"
+        ? "Type your answer"
+        : "Choose the best answer";
   els.challengeProgress.textContent = `${session.challengeIndex + 1} / ${session.challenges.length}`;
+  renderRemediationStatus(session, remediationTopic);
   els.challengeOptions.innerHTML = "";
   els.challengeInput.value = "";
   els.challengeInput.placeholder = challenge.placeholder || "Type your answer";
@@ -1647,18 +1657,27 @@ async function handleTextChallengeSubmit(event) {
   els.submitAnswer.textContent = "Checked";
 
   const correct = grade ? grade.correct : evaluateTextAnswer(typedAnswer, challenge);
+  let openedDeepDive = false;
   if (correct) {
     stopChallengeStatusTimer("Grading complete.", "ready");
     els.challengeFeedback.textContent = grade?.feedback || `Correct. ${challenge.explanation}`;
     els.challengeFeedback.className = "feedback success";
   } else {
+    if (grade?.remediationTopics?.length) {
+      openedDeepDive = await openRemediationPaths(challenge, typedAnswer, grade);
+    }
     stopChallengeStatusTimer("Grading complete.", "ready");
     els.challengeFeedback.textContent =
-      grade?.feedback || `Not quite. A strong answer is "${challenge.answer}". ${challenge.explanation}`;
+      openedDeepDive
+        ? `${grade.feedback} Deep dives are now open below. Clear each one with 5 correct answers in a row.`
+        : grade?.feedback || `Not quite. A strong answer is "${challenge.answer}". ${challenge.explanation}`;
     els.challengeFeedback.className = "feedback warning";
   }
 
   recordChallengeAnswer(challenge, correct, typedAnswer, grade);
+  if (openedDeepDive) {
+    els.nextChallenge.textContent = "Start deep dive";
+  }
 }
 
 function recordChallengeAnswer(challenge, correct, response, grade = null) {
@@ -1670,6 +1689,18 @@ function recordChallengeAnswer(challenge, correct, response, grade = null) {
     response,
     grade
   });
+
+  if (challenge.remediationTopicId && session.remediation?.topics[challenge.remediationTopicId]) {
+    const topic = session.remediation.topics[challenge.remediationTopicId];
+    topic.attempts += 1;
+    topic.streak = correct ? topic.streak + 1 : 0;
+    topic.completed = topic.streak >= topic.targetStreak;
+    if (topic.completed) {
+      pruneResolvedRemediationChallenges(session);
+    } else {
+      ensureRemediationRunway(session, topic.id);
+    }
+  }
 }
 
 function evaluateTextAnswer(response, challenge) {
@@ -1733,6 +1764,11 @@ async function finishSession() {
         : score >= 80
           ? "Strong finish. A follow-up lesson can stretch you, or you can retry this one."
           : "There are still misses in your weaker skills, so a repeat lesson is worthwhile.";
+
+    const unfinishedDeepDives = Object.values(session.remediation?.topics || {}).filter((topic) => !topic.completed);
+    if (unfinishedDeepDives.length) {
+      adaptation += ` Deep dives are still active in ${unfinishedDeepDives.map((topic) => topic.title.toLowerCase()).join(" and ")}.`;
+    }
   } else {
     const passed = score >= 80 && allSkillBreakdownsAbove(skillBreakdown, 50);
     state.progress.qualification[session.level] = {
@@ -1920,6 +1956,10 @@ function startSessionFromContent(content, kind, options = {}) {
     kind,
     challengeIndex: 0,
     answers: [],
+    remediation: {
+      topics: {},
+      openedFromChallengeIds: []
+    },
     points: content.points || fallbackPoints,
     grammar: content.grammar || fallbackGrammar,
     challenges: buildSessionChallengeQueue(content, options)
@@ -2008,6 +2048,116 @@ async function gradeAnswerWithAPI(challenge, learnerAnswer) {
   }
 }
 
+async function openRemediationPaths(challenge, learnerAnswer, grade) {
+  const session = state.activeSession;
+  if (!session || !grade?.remediationTopics?.length) {
+    return false;
+  }
+
+  const freshTopics = grade.remediationTopics.filter((topic) => {
+    return !session.remediation.topics[topic.key];
+  });
+
+  if (!freshTopics.length) {
+    return false;
+  }
+
+  let drilldown = null;
+  if (state.api.configured) {
+    setAIBadge(`Generating targeted deep dives on ${state.api.model || "the configured model"}...`, "warning");
+    renderAIStatus();
+    drilldown = await generateDrilldownWithAPI(challenge, learnerAnswer, grade, freshTopics);
+  }
+
+  const topicsToOpen = drilldown?.topics?.length
+    ? drilldown.topics
+    : buildFallbackRemediationTopics(challenge, grade, freshTopics);
+
+  if (!topicsToOpen.length) {
+    return false;
+  }
+
+  const insertionIndex = session.challengeIndex + 1;
+  const queuedChallenges = [];
+
+  topicsToOpen.forEach((topic) => {
+    session.remediation.topics[topic.topicKey] = {
+      id: topic.topicKey,
+      title: topic.title,
+      description: topic.description,
+      skill: topic.skill,
+      model: {
+        answer: challenge.answer,
+        acceptedAnswers: challenge.acceptedAnswers || [challenge.answer],
+        prompt: challenge.prompt
+      },
+      streak: 0,
+      attempts: 0,
+      targetStreak: 5,
+      completed: false
+    };
+
+    topic.challenges.forEach((item, index) => {
+      queuedChallenges.push({
+        ...item,
+        id: item.id || `${challenge.id || "challenge"}-${topic.topicKey}-${index}`,
+        remediationTopicId: topic.topicKey,
+        sourceChallengeId: challenge.id || challenge.prompt
+      });
+    });
+  });
+
+  session.challenges.splice(insertionIndex, 0, ...queuedChallenges);
+  return true;
+}
+
+async function generateDrilldownWithAPI(challenge, learnerAnswer, grade, topics) {
+  try {
+    const response = await fetchWithTimeout("/api/generate-drilldown", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        learnerProfile: summarizeLearnerProfile(),
+        sourceChallenge: {
+          id: challenge.id || null,
+          prompt: challenge.prompt,
+          answer: challenge.answer,
+          acceptedAnswers: challenge.acceptedAnswers || [challenge.answer],
+          skill: challenge.skill,
+          explanation: challenge.explanation
+        },
+        learnerAnswer,
+        grade,
+        topics
+      })
+    }, 22000);
+
+    if (!response.ok) {
+      throw new Error("Drilldown generation failed");
+    }
+
+    const json = await response.json();
+    if (json.ok) {
+      setAIBadge(`AI active. Live deep dives are working on ${state.api.model || "the configured model"}.`, "live");
+      renderAIStatus();
+      return json.drilldown;
+    }
+
+    if (json.error) {
+      updateAIBadgeFromError(json.error);
+      renderAIStatus();
+    }
+
+    return null;
+  } catch {
+    setAIBadge("AI deep-dive generation timed out or failed. Using local drill fallback.", "warning");
+    renderAIStatus();
+    return null;
+  }
+}
+
 async function estimateLevelWithAPI(payload) {
   try {
     const response = await fetchWithTimeout("/api/estimate-level", {
@@ -2055,6 +2205,173 @@ function updateAIBadgeFromError(errorText) {
   }
 
   setAIBadge("AI is configured, but the latest request failed. Local fallback is active.", "warning");
+}
+
+function renderRemediationStatus(session, activeTopic) {
+  const topics = Object.values(session.remediation?.topics || {});
+  if (!topics.length) {
+    els.remediationStatus.innerHTML = "";
+    els.remediationStatus.classList.add("hidden");
+    return;
+  }
+
+  els.remediationStatus.classList.remove("hidden");
+  els.remediationStatus.innerHTML = "";
+
+  topics.forEach((topic) => {
+    const pill = document.createElement("span");
+    const tone = topic.completed ? "done" : activeTopic?.id === topic.id ? "active" : "";
+    pill.className = `remediation-pill ${tone}`.trim();
+    pill.textContent = topic.completed
+      ? `${topic.title} cleared`
+      : `${topic.title} ${topic.streak}/${topic.targetStreak}`;
+    els.remediationStatus.appendChild(pill);
+  });
+}
+
+function pruneResolvedRemediationChallenges(session) {
+  if (!session?.remediation?.topics) {
+    return;
+  }
+
+  session.challenges = session.challenges.filter((challenge, index) => {
+    if (index <= session.challengeIndex) {
+      return true;
+    }
+
+    if (!challenge.remediationTopicId) {
+      return true;
+    }
+
+    return !session.remediation.topics[challenge.remediationTopicId]?.completed;
+  });
+}
+
+function ensureRemediationRunway(session, topicId) {
+  const topic = session.remediation.topics[topicId];
+  if (!topic || topic.completed) {
+    return;
+  }
+
+  const pendingCount = session.challenges.filter((challenge, index) => {
+    return index > session.challengeIndex && challenge.remediationTopicId === topicId;
+  }).length;
+  const needed = Math.max(0, topic.targetStreak - topic.streak - pendingCount);
+
+  if (!needed) {
+    return;
+  }
+
+  const fallbackChallenges = Array.from({ length: needed }, (_, index) => ({
+    ...(function buildTopUp() {
+      const answer = selectFallbackRemediationAnswer(
+        {
+          answer: topic.model.answer
+        },
+        {
+          key: topic.id
+        }
+      );
+
+      return {
+    id: `${topicId}-topup-${topic.attempts}-${index}`,
+    type: "text",
+    prompt: buildFallbackRemediationPrompt(
+      {
+        prompt: topic.model.prompt,
+        answer: topic.model.answer,
+        acceptedAnswers: topic.model.acceptedAnswers,
+        skill: topic.skill
+      },
+      {
+        key: topic.id,
+        title: topic.title,
+        whyItMatters: topic.description,
+        skill: topic.skill
+      },
+      topic.attempts + index
+    ),
+    skill: topic.skill,
+    explanation: topic.description,
+    answer,
+    acceptedAnswers: [answer],
+    options: null,
+    placeholder: "Type the corrected German",
+    remediationTopicId: topicId
+      };
+    })()
+  }));
+
+  session.challenges.splice(session.challengeIndex + 1, 0, ...fallbackChallenges);
+}
+
+function buildFallbackRemediationTopics(challenge, grade, topics) {
+  return topics.map((topic, topicIndex) => ({
+    topicKey: topic.key,
+    title: topic.title,
+    description: topic.whyItMatters,
+    skill: topic.skill || challenge.skill,
+    challenges: Array.from({ length: 5 }, (_, index) => {
+      const answer = selectFallbackRemediationAnswer(challenge, topic);
+      return {
+        id: `${challenge.id || "challenge"}-${topic.key}-fallback-${index}`,
+        type: "text",
+        prompt: buildFallbackRemediationPrompt(challenge, topic, index),
+        skill: topic.skill || challenge.skill,
+        explanation: topic.whyItMatters,
+        answer,
+        acceptedAnswers: [answer],
+        options: null,
+        placeholder: "Type the corrected German"
+      };
+    })
+  }));
+}
+
+function selectFallbackRemediationAnswer(challenge, topic) {
+  if (topic.key === "capitalization") {
+    return titleCaseGermanNouns(challenge.answer);
+  }
+
+  return challenge.answer;
+}
+
+function buildFallbackRemediationPrompt(challenge, topic, index) {
+  if (topic.key === "capitalization") {
+    return `Rewrite this with correct German capitalization: ${decapitalizePromptAnswer(challenge.answer, index)}`;
+  }
+
+  if (topic.key === "spelling") {
+    return `Type the correctly spelled German sentence: ${challenge.prompt.replace(/^Type the German sentence for:\s*/i, "")}`;
+  }
+
+  return `Correct this weak spot (${topic.title.toLowerCase()}): ${challenge.prompt}`;
+}
+
+function titleCaseGermanNouns(sentence) {
+  return sentence
+    .split(" ")
+    .map((token, index) => {
+      if (index === 0) {
+        return token.charAt(0).toUpperCase() + token.slice(1);
+      }
+
+      return /^(kaffee|tee|wasser|saft|milch|brot|haus|kino|mittagessen)$/i.test(token)
+        ? token.charAt(0).toUpperCase() + token.slice(1).toLowerCase()
+        : token.toLowerCase();
+    })
+    .join(" ");
+}
+
+function decapitalizePromptAnswer(answer, index) {
+  if (index % 2 === 0) {
+    return answer.toLowerCase();
+  }
+
+  return answer
+    .split(" ")
+    .map((token) => token.toLowerCase())
+    .join(" ");
 }
 
 function startChallengeStatusTimer(baseText) {
