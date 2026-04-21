@@ -380,6 +380,7 @@ async function gradeAnswer(body) {
     "Identify the real origin of the learner's mistake, not just whether it is wrong.",
     "Separate root causes such as spelling, capitalization, article/case choice, word order, verb form, register, gender, preposition, or meaning.",
     "If the learner has two distinct weak spots, return two remediationTopics.",
+    "Whenever correct=false for a typed production answer, remediationTopics must contain at least one concrete drill-down topic.",
     "Grade leniently for punctuation, but treat capitalization or spelling as real issues when they reveal a learnable weak spot.",
     "If the response is close but flawed, set correct=false and score between 40 and 79.",
     "Return concise feedback that sounds like a tutor, not an examiner, and mention the specific weak spots.",
@@ -479,6 +480,7 @@ async function generateDrilldown(body) {
     "For each topic, return exactly 5 short challenges.",
     "Prefer text challenges, but choice challenges are allowed when useful.",
     "Every challenge must directly train the detected issue and be easy to grade.",
+    "Do not repeat the same prompt wording twice inside one topic.",
     "Keep content CEFR-appropriate to the learner context.",
     "Use varied prompts so the learner cannot just memorize one surface pattern."
   ].join(" ");

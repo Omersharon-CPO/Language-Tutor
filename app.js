@@ -829,6 +829,11 @@ const els = {
   grammarExamples: document.getElementById("grammar-examples"),
   challengePrompt: document.getElementById("challenge-prompt"),
   challengeSkill: document.getElementById("challenge-skill"),
+  lessonProgressBar: document.getElementById("lesson-progress-bar"),
+  lessonProgressNote: document.getElementById("lesson-progress-note"),
+  branchPanel: document.getElementById("branch-panel"),
+  branchNote: document.getElementById("branch-note"),
+  branchList: document.getElementById("branch-list"),
   challengeMode: document.getElementById("challenge-mode"),
   remediationStatus: document.getElementById("remediation-status"),
   challengeProgress: document.getElementById("challenge-progress"),
@@ -1534,6 +1539,7 @@ function renderChallenge() {
   pruneResolvedRemediationChallenges(session);
   const challenge = session.challenges[session.challengeIndex];
   const isLastChallenge = session.challengeIndex === session.challenges.length - 1;
+  const mainProgress = getMainLessonProgress(session);
   els.challengePrompt.textContent = challenge.prompt;
   const remediationTopic = challenge.remediationTopicId ? session.remediation.topics[challenge.remediationTopicId] : null;
   els.challengeSkill.textContent = remediationTopic
@@ -1545,7 +1551,9 @@ function renderChallenge() {
       : challenge.type === "text"
         ? "Type your answer"
         : "Choose the best answer";
-  els.challengeProgress.textContent = `${session.challengeIndex + 1} / ${session.challenges.length}`;
+  els.challengeProgress.textContent = `Lesson ${Math.min(mainProgress.completed + 1, mainProgress.total)} / ${mainProgress.total}`;
+  renderLessonProgress(session, remediationTopic);
+  renderBranchPanel(session, remediationTopic);
   renderRemediationStatus(session, remediationTopic);
   els.challengeOptions.innerHTML = "";
   els.challengeInput.value = "";
@@ -1559,7 +1567,7 @@ function renderChallenge() {
   els.challengeFeedback.textContent = "";
   els.challengeFeedback.className = "feedback";
   els.nextChallenge.disabled = true;
-  els.nextChallenge.textContent = isLastChallenge ? "Finish lesson" : "Next prompt";
+  els.nextChallenge.textContent = isLastChallenge ? "Finish lesson" : remediationTopic ? "Return to lesson path" : "Next prompt";
   state.sessionFeedbackLocked = false;
 
   if (challenge.type === "text") {
@@ -1663,8 +1671,14 @@ async function handleTextChallengeSubmit(event) {
     els.challengeFeedback.textContent = grade?.feedback || `Correct. ${challenge.explanation}`;
     els.challengeFeedback.className = "feedback success";
   } else {
-    if (grade?.remediationTopics?.length) {
-      openedDeepDive = await openRemediationPaths(challenge, typedAnswer, grade);
+    const remediationTopics = grade?.remediationTopics?.length
+      ? grade.remediationTopics
+      : inferRemediationTopicsLocally(challenge, typedAnswer);
+    if (remediationTopics.length) {
+      openedDeepDive = await openRemediationPaths(challenge, typedAnswer, {
+        ...grade,
+        remediationTopics
+      });
     }
     stopChallengeStatusTimer("Grading complete.", "ready");
     els.challengeFeedback.textContent =
@@ -1686,6 +1700,7 @@ function recordChallengeAnswer(challenge, correct, response, grade = null) {
     skill: challenge.skill,
     correct,
     challengeId: challenge.id || challenge.prompt,
+    remediationTopicId: challenge.remediationTopicId || null,
     response,
     grade
   });
@@ -1731,7 +1746,7 @@ function advanceChallenge() {
     return;
   }
 
-  session.challengeIndex += 1;
+  session.challengeIndex = getNextChallengeIndex(session);
   renderChallenge();
 }
 
@@ -1950,19 +1965,22 @@ function startSessionFromContent(content, kind, options = {}) {
     }))
   };
 
+  const initialChallenges = buildSessionChallengeQueue(content, options);
+
   state.lastResult = null;
   state.activeSession = {
     ...content,
     kind,
     challengeIndex: 0,
     answers: [],
+    mainChallengeIds: initialChallenges.map((challenge) => challenge.id || challenge.prompt),
     remediation: {
       topics: {},
       openedFromChallengeIds: []
     },
     points: content.points || fallbackPoints,
     grammar: content.grammar || fallbackGrammar,
-    challenges: buildSessionChallengeQueue(content, options)
+    challenges: initialChallenges
   };
 }
 
@@ -2069,9 +2087,11 @@ async function openRemediationPaths(challenge, learnerAnswer, grade) {
     drilldown = await generateDrilldownWithAPI(challenge, learnerAnswer, grade, freshTopics);
   }
 
-  const topicsToOpen = drilldown?.topics?.length
-    ? drilldown.topics
-    : buildFallbackRemediationTopics(challenge, grade, freshTopics);
+  const topicsToOpen = dedupeRemediationTopicBundles(
+    drilldown?.topics?.length
+      ? drilldown.topics
+      : buildFallbackRemediationTopics(challenge, grade, freshTopics)
+  );
 
   if (!topicsToOpen.length) {
     return false;
@@ -2156,6 +2176,107 @@ async function generateDrilldownWithAPI(challenge, learnerAnswer, grade, topics)
     renderAIStatus();
     return null;
   }
+}
+
+function getMainLessonProgress(session) {
+  const total = session.mainChallengeIds?.length || session.challenges.filter((challenge) => !challenge.remediationTopicId).length;
+  const answered = new Set(
+    session.answers
+      .filter((answer) => !answer.remediationTopicId)
+      .map((answer) => answer.challengeId)
+  );
+  return {
+    completed: Math.min(answered.size, total),
+    total: Math.max(1, total)
+  };
+}
+
+function renderLessonProgress(session, activeTopic) {
+  const progress = getMainLessonProgress(session);
+  els.lessonProgressBar.innerHTML = "";
+  els.lessonProgressBar.style.setProperty("--step-count", String(progress.total));
+  els.lessonProgressNote.textContent = activeTopic
+    ? `Main path paused while you clear "${activeTopic.title}".`
+    : `Step ${Math.min(progress.completed + 1, progress.total)} of ${progress.total}`;
+
+  for (let index = 0; index < progress.total; index += 1) {
+    const segment = document.createElement("span");
+    segment.className = "lesson-progress-segment";
+    if (index < progress.completed) {
+      segment.classList.add("complete");
+    } else if (index === progress.completed && !activeTopic) {
+      segment.classList.add("current");
+    }
+    els.lessonProgressBar.appendChild(segment);
+  }
+}
+
+function renderBranchPanel(session, activeTopic) {
+  const topics = Object.values(session.remediation?.topics || {});
+  if (!topics.length) {
+    els.branchPanel.classList.add("hidden");
+    els.branchList.innerHTML = "";
+    els.branchNote.textContent = "No active branches";
+    return;
+  }
+
+  els.branchPanel.classList.remove("hidden");
+  const openCount = topics.filter((topic) => !topic.completed).length;
+  els.branchNote.textContent = activeTopic
+    ? `You are inside a branch. Clear it, then the lesson path resumes.`
+    : `${openCount} branch${openCount === 1 ? "" : "es"} currently open`;
+  els.branchList.innerHTML = "";
+
+  topics.forEach((topic) => {
+    const card = document.createElement("article");
+    card.className = "branch-card";
+    if (activeTopic?.id === topic.id) {
+      card.classList.add("active");
+    }
+    if (topic.completed) {
+      card.classList.add("done");
+    }
+    card.innerHTML = `
+      <div class="branch-title-row">
+        <strong>${topic.title}</strong>
+        <span class="branch-streak">${topic.completed ? "Cleared" : `${topic.streak}/${topic.targetStreak} in a row`}</span>
+      </div>
+      <p class="note">${topic.description}</p>
+    `;
+    els.branchList.appendChild(card);
+  });
+}
+
+function getNextChallengeIndex(session) {
+  const activeBranchIndex = findNextActiveBranchChallengeIndex(session, session.challengeIndex);
+  if (activeBranchIndex !== -1) {
+    return activeBranchIndex;
+  }
+
+  for (let index = session.challengeIndex + 1; index < session.challenges.length; index += 1) {
+    const challenge = session.challenges[index];
+    if (!challenge.remediationTopicId) {
+      return index;
+    }
+  }
+
+  return session.challengeIndex + 1;
+}
+
+function findNextActiveBranchChallengeIndex(session, currentIndex) {
+  for (let index = currentIndex + 1; index < session.challenges.length; index += 1) {
+    const challenge = session.challenges[index];
+    if (!challenge.remediationTopicId) {
+      continue;
+    }
+
+    const topic = session.remediation.topics[challenge.remediationTopicId];
+    if (topic && !topic.completed) {
+      return index;
+    }
+  }
+
+  return -1;
 }
 
 async function estimateLevelWithAPI(payload) {
@@ -2306,7 +2427,7 @@ function ensureRemediationRunway(session, topicId) {
 }
 
 function buildFallbackRemediationTopics(challenge, grade, topics) {
-  return topics.map((topic, topicIndex) => ({
+  return topics.map((topic) => ({
     topicKey: topic.key,
     title: topic.title,
     description: topic.whyItMatters,
@@ -2338,11 +2459,30 @@ function selectFallbackRemediationAnswer(challenge, topic) {
 
 function buildFallbackRemediationPrompt(challenge, topic, index) {
   if (topic.key === "capitalization") {
-    return `Rewrite this with correct German capitalization: ${decapitalizePromptAnswer(challenge.answer, index)}`;
+    const variants = [
+      `Rewrite this with correct German capitalization: ${decapitalizePromptAnswer(challenge.answer, index)}`,
+      `Type the sentence with proper noun capitalization: ${decapitalizePromptAnswer(challenge.answer, index + 1)}`,
+      `Fix only the capitalization in this German phrase: ${decapitalizePromptAnswer(challenge.answer, index + 2)}`
+    ];
+    return variants[index % variants.length];
   }
 
   if (topic.key === "spelling") {
-    return `Type the correctly spelled German sentence: ${challenge.prompt.replace(/^Type the German sentence for:\s*/i, "")}`;
+    const englishCue = challenge.prompt.replace(/^Type the German sentence for:\s*/i, "");
+    const variants = [
+      `Type the correctly spelled German sentence: ${englishCue}`,
+      `Correct the spelling and type the German sentence for: ${englishCue}`,
+      `Write the German sentence with correct spelling: ${englishCue}`
+    ];
+    return variants[index % variants.length];
+  }
+
+  if (topic.key === "article_case") {
+    return `Type the sentence with the correct article and case: ${challenge.prompt.replace(/^Type the German sentence for:\s*/i, "")}`;
+  }
+
+  if (topic.key === "meaning") {
+    return `Try again with the full natural German phrase: ${challenge.prompt.replace(/^Type the German sentence for:\s*/i, "")}`;
   }
 
   return `Correct this weak spot (${topic.title.toLowerCase()}): ${challenge.prompt}`;
@@ -2372,6 +2512,116 @@ function decapitalizePromptAnswer(answer, index) {
     .split(" ")
     .map((token) => token.toLowerCase())
     .join(" ");
+}
+
+function inferRemediationTopicsLocally(challenge, learnerAnswer) {
+  const expected = challenge.answer || "";
+  const response = learnerAnswer || "";
+  const topics = [];
+  const expectedWords = expected.replace(/[.,!?]/g, "").split(/\s+/).filter(Boolean);
+  const responseWords = response.replace(/[.,!?]/g, "").split(/\s+/).filter(Boolean);
+
+  const capitalizationMiss = expectedWords.some((word, index) => {
+    const responseWord = responseWords[index];
+    return responseWord && word.toLowerCase() === responseWord.toLowerCase() && word !== responseWord;
+  });
+  if (capitalizationMiss) {
+    topics.push({
+      key: "capitalization",
+      title: "German capitalization",
+      whyItMatters: "German nouns and sentence openings need reliable capitalization to look native.",
+      learnerPattern: "You wrote the right word shape but used the wrong letter case.",
+      skill: "grammar"
+    });
+  }
+
+  const spellingMiss = expectedWords.some((word, index) => {
+    const responseWord = responseWords[index];
+    return responseWord && word.toLowerCase() !== responseWord.toLowerCase() && similarity(word, responseWord) >= 0.6;
+  });
+  if (spellingMiss) {
+    topics.push({
+      key: "spelling",
+      title: "Word spelling",
+      whyItMatters: "This word is close, but the spelling still needs to become automatic.",
+      learnerPattern: "You are near the correct form but one or two letters are off.",
+      skill: challenge.skill || "vocabulary"
+    });
+  }
+
+  const missingArticle = normalizeGerman(expected).includes(" einen ")
+    && !normalizeGerman(response).includes(" einen ");
+  if (missingArticle) {
+    topics.push({
+      key: "article_case",
+      title: "Article and case choice",
+      whyItMatters: "This phrase needs the right article for natural German.",
+      learnerPattern: "The noun phrase is missing or weakening the article.",
+      skill: "grammar"
+    });
+  }
+
+  if (!topics.length && normalizeGerman(response) !== normalizeGerman(expected)) {
+    topics.push({
+      key: "meaning",
+      title: "Core phrase choice",
+      whyItMatters: "You chose a different German phrase than the target pattern, so the meaning/form pairing needs reinforcement.",
+      learnerPattern: "The answer is understandable but not the target phrase.",
+      skill: challenge.skill || "speaking"
+    });
+  }
+
+  return topics.slice(0, 2);
+}
+
+function dedupeRemediationTopicBundles(topicBundles) {
+  return topicBundles.map((topic) => {
+    const seen = new Set();
+    const challenges = topic.challenges.filter((challenge) => {
+      const signature = buildChallengeSignature(challenge);
+      if (seen.has(signature)) {
+        return false;
+      }
+      seen.add(signature);
+      return true;
+    });
+
+    return {
+      ...topic,
+      challenges
+    };
+  }).filter((topic) => topic.challenges.length);
+}
+
+function buildChallengeSignature(challenge) {
+  return `${normalizeGerman(challenge.prompt || "")}::${normalizeGerman(challenge.answer || "")}`;
+}
+
+function similarity(left, right) {
+  const a = normalizeGerman(left);
+  const b = normalizeGerman(right);
+  const max = Math.max(a.length, b.length) || 1;
+  return 1 - levenshtein(a, b) / max;
+}
+
+function levenshtein(left, right) {
+  const rows = Array.from({ length: left.length + 1 }, (_, index) => [index]);
+  for (let column = 1; column <= right.length; column += 1) {
+    rows[0][column] = column;
+  }
+
+  for (let row = 1; row <= left.length; row += 1) {
+    for (let column = 1; column <= right.length; column += 1) {
+      const cost = left[row - 1] === right[column - 1] ? 0 : 1;
+      rows[row][column] = Math.min(
+        rows[row - 1][column] + 1,
+        rows[row][column - 1] + 1,
+        rows[row - 1][column - 1] + cost
+      );
+    }
+  }
+
+  return rows[left.length][right.length];
 }
 
 function startChallengeStatusTimer(baseText) {

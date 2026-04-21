@@ -430,6 +430,85 @@ h2 {
   margin: 0 0 12px;
 }
 
+.lesson-progress-block,
+.branch-panel {
+  margin: 0 0 14px;
+}
+
+.lesson-progress-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.lesson-progress-bar {
+  display: grid;
+  grid-template-columns: repeat(var(--step-count, 1), minmax(0, 1fr));
+  gap: 8px;
+}
+
+.lesson-progress-segment {
+  height: 12px;
+  border-radius: 999px;
+  background: rgba(27, 26, 23, 0.08);
+  border: 1px solid rgba(27, 26, 23, 0.04);
+}
+
+.lesson-progress-segment.complete {
+  background: rgba(47, 125, 74, 0.18);
+  border-color: rgba(47, 125, 74, 0.22);
+}
+
+.lesson-progress-segment.current {
+  background: rgba(209, 91, 52, 0.22);
+  border-color: rgba(209, 91, 52, 0.24);
+}
+
+.branch-panel {
+  padding: 14px 16px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.62);
+  border: 1px solid var(--line);
+}
+
+.branch-list {
+  display: grid;
+  gap: 10px;
+}
+
+.branch-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px 14px;
+  border-radius: 18px;
+  background: rgba(255, 249, 240, 0.92);
+  border: 1px solid rgba(209, 91, 52, 0.12);
+}
+
+.branch-card.active {
+  background: rgba(255, 244, 229, 0.95);
+  border-color: rgba(209, 91, 52, 0.2);
+}
+
+.branch-card.done {
+  background: rgba(245, 252, 247, 0.95);
+  border-color: rgba(47, 125, 74, 0.16);
+}
+
+.branch-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.branch-streak {
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
 .remediation-status {
   display: flex;
   flex-wrap: wrap;
