@@ -62,7 +62,10 @@ The project includes a [`railway.toml`](./railway.toml) file that sets:
 - Do not commit `.env`. It is ignored by `.gitignore`.
 - Railway automatically injects `PORT`, and the server already listens on it.
 - Railway healthchecks require an HTTP `200` response; this app exposes that on `/api/status`.
-- Learner profiles are stored server-side by email. For durable storage on Railway, mount a volume and set `DATA_DIR` to that mount path.
+- Learner profiles are stored server-side by email. For durable storage on Railway, attach a volume.
+- Recommended Railway volume mount path: `/data`
+- The app automatically uses `RAILWAY_VOLUME_MOUNT_PATH` when Railway provides it, so `DATA_DIR` is optional on Railway.
+- If you prefer a custom mount path, set `DATA_DIR` to match it.
 
 ## Next ideas
 
