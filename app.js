@@ -1138,8 +1138,6 @@ async function handleEmailLookupSubmit(event) {
       state.progress = normalizeProgress(result.learner.progress);
       saveLearnerIdentity();
       saveProgress();
-      state.recommendation = getRecommendation();
-      renderAll();
       return;
     }
 
@@ -1154,6 +1152,8 @@ async function handleEmailLookupSubmit(event) {
     els.authEmailFeedback.className = "feedback warning";
   } finally {
     state.ui.authBusy = false;
+    state.recommendation = getRecommendation();
+    renderAll();
     renderAuth();
   }
 }
@@ -1187,13 +1187,13 @@ async function handleNameRegistrationSubmit(event) {
     els.authNameInput.value = "";
     saveLearnerIdentity();
     saveProgress();
-    state.recommendation = getRecommendation();
-    renderAll();
   } catch {
     els.authNameFeedback.textContent = "I could not create that learner profile right now. Please try again.";
     els.authNameFeedback.className = "feedback warning";
   } finally {
     state.ui.authBusy = false;
+    state.recommendation = getRecommendation();
+    renderAll();
     renderAuth();
   }
 }
