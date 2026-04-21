@@ -744,6 +744,7 @@ const qualificationTests = {
 };
 
 const storageKey = "deutsch-trainer-adaptive-progress";
+const learnerStorageKey = "deutsch-trainer-learner";
 const todayKey = new Date().toISOString().slice(0, 10);
 
 normalizeContentLibraries();
@@ -766,7 +767,13 @@ const defaultProgress = {
   }
 };
 
+const defaultLearner = {
+  email: "",
+  name: ""
+};
+
 const state = {
+  learner: loadLearnerIdentity(),
   progress: loadProgress(),
   recommendation: null,
   activeSession: null,
@@ -776,6 +783,9 @@ const state = {
     generatingSession: false,
     gradingAnswer: false,
     estimatingLevel: false,
+    authBusy: false,
+    authStep: "email",
+    authEmailDraft: "",
     challengeStatusTimerId: null,
     challengeStatusStartedAt: null,
     challengeStatusBaseText: ""
@@ -791,6 +801,8 @@ const state = {
 
 const els = {
   aiStatus: document.getElementById("ai-status"),
+  learnerGreeting: document.getElementById("learner-greeting"),
+  learnerIdentity: document.getElementById("learner-identity"),
   currentBand: document.getElementById("current-band"),
   streakCount: document.getElementById("streak-count"),
   accuracyCount: document.getElementById("accuracy-count"),
@@ -834,17 +846,34 @@ const els = {
   resultSecondary: document.getElementById("result-secondary"),
   studyNow: document.getElementById("study-now"),
   startRecommended: document.getElementById("start-recommended"),
-  resetProgress: document.getElementById("reset-progress")
+  resetProgress: document.getElementById("reset-progress"),
+  switchLearner: document.getElementById("switch-learner"),
+  authOverlay: document.getElementById("auth-overlay"),
+  authCopy: document.getElementById("auth-copy"),
+  authEmailForm: document.getElementById("auth-email-form"),
+  authEmailInput: document.getElementById("auth-email-input"),
+  authEmailFeedback: document.getElementById("auth-email-feedback"),
+  authEmailSubmit: document.getElementById("auth-email-submit"),
+  authNameForm: document.getElementById("auth-name-form"),
+  authEmailPreview: document.getElementById("auth-email-preview"),
+  authNameInput: document.getElementById("auth-name-input"),
+  authNameFeedback: document.getElementById("auth-name-feedback"),
+  authNameSubmit: document.getElementById("auth-name-submit"),
+  authBack: document.getElementById("auth-back")
 };
 
 init();
 
 async function init() {
-  state.progress = updateStreak(state.progress);
+  bindEvents();
   await hydrateApiStatus();
+  await hydrateLearner();
+  state.progress = updateStreak(state.progress);
+  if (state.learner.email) {
+    saveProgress();
+  }
   state.recommendation = getRecommendation();
   renderAll();
-  bindEvents();
 }
 
 function bindEvents() {
@@ -855,13 +884,21 @@ function bindEvents() {
   els.resultPrimary.addEventListener("click", handleResultPrimary);
   els.resultSecondary.addEventListener("click", handleResultSecondary);
   els.resetProgress.addEventListener("click", () => {
-    state.progress = structuredClone(defaultProgress);
-    state.recommendation = getRecommendation();
-    state.activeSession = null;
-    state.lastResult = null;
-    saveProgress();
-    renderAll();
-    alert("Learner profile reset.");
+    void resetLearnerProgress();
+  });
+  els.switchLearner.addEventListener("click", () => {
+    switchLearner();
+  });
+  els.authEmailForm.addEventListener("submit", handleEmailLookupSubmit);
+  els.authNameForm.addEventListener("submit", handleNameRegistrationSubmit);
+  els.authBack.addEventListener("click", () => {
+    state.ui.authStep = "email";
+    state.ui.authEmailDraft = "";
+    els.authNameInput.value = "";
+    els.authNameFeedback.textContent = "";
+    els.authNameFeedback.className = "feedback";
+    renderAuth();
+    window.setTimeout(() => els.authEmailInput.focus(), 0);
   });
 }
 
@@ -962,21 +999,41 @@ function loadProgress() {
   }
 
   try {
-    const parsed = JSON.parse(raw);
-    return {
-      ...structuredClone(defaultProgress),
-      ...parsed,
-      aiEstimate: parsed.aiEstimate || null,
-      completedLessons: parsed.completedLessons || {},
-      qualification: parsed.qualification || {},
-      lessonHistory: Array.isArray(parsed.lessonHistory) ? parsed.lessonHistory : [],
-      skillScores: {
-        ...defaultProgress.skillScores,
-        ...(parsed.skillScores || {})
-      }
-    };
+    return normalizeProgress(JSON.parse(raw));
   } catch {
     return structuredClone(defaultProgress);
+  }
+}
+
+function normalizeProgress(parsed) {
+  return {
+    ...structuredClone(defaultProgress),
+    ...(parsed || {}),
+    aiEstimate: parsed?.aiEstimate || null,
+    completedLessons: parsed?.completedLessons || {},
+    qualification: parsed?.qualification || {},
+    lessonHistory: Array.isArray(parsed?.lessonHistory) ? parsed.lessonHistory : [],
+    skillScores: {
+      ...defaultProgress.skillScores,
+      ...(parsed?.skillScores || {})
+    }
+  };
+}
+
+function loadLearnerIdentity() {
+  const raw = localStorage.getItem(learnerStorageKey);
+  if (!raw) {
+    return { ...defaultLearner };
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      email: normalizeEmail(parsed.email),
+      name: normalizeName(parsed.name)
+    };
+  } catch {
+    return { ...defaultLearner };
   }
 }
 
@@ -1024,6 +1081,155 @@ async function hydrateApiStatus() {
   }
 }
 
+async function hydrateLearner() {
+  if (!state.learner.email || window.location.protocol === "file:") {
+    return;
+  }
+
+  state.ui.authBusy = true;
+  renderAuth();
+
+  try {
+    const result = await lookupLearner(state.learner.email);
+    if (!result?.exists || !result.learner) {
+      state.learner = { ...defaultLearner };
+      state.progress = structuredClone(defaultProgress);
+      localStorage.removeItem(storageKey);
+      saveLearnerIdentity();
+      return;
+    }
+
+    state.learner = {
+      email: normalizeEmail(result.learner.email),
+      name: normalizeName(result.learner.name)
+    };
+    saveLearnerIdentity();
+    state.progress = normalizeProgress(result.learner.progress);
+    saveProgress();
+  } catch {
+    setAIBadge("The app could not load learner memory. Local progress is still available in this browser.", "warning");
+  } finally {
+    state.ui.authBusy = false;
+  }
+}
+
+async function handleEmailLookupSubmit(event) {
+  event.preventDefault();
+  const email = normalizeEmail(els.authEmailInput.value);
+
+  if (!email) {
+    els.authEmailFeedback.textContent = "Enter a valid email address first.";
+    els.authEmailFeedback.className = "feedback warning";
+    return;
+  }
+
+  state.ui.authBusy = true;
+  els.authEmailFeedback.textContent = "";
+  els.authEmailFeedback.className = "feedback";
+  renderAuth();
+
+  try {
+    const result = await lookupLearner(email);
+    if (result?.exists && result.learner) {
+      state.learner = {
+        email: normalizeEmail(result.learner.email),
+        name: normalizeName(result.learner.name)
+      };
+      state.progress = normalizeProgress(result.learner.progress);
+      saveLearnerIdentity();
+      saveProgress();
+      state.recommendation = getRecommendation();
+      renderAll();
+      return;
+    }
+
+    state.ui.authStep = "name";
+    state.ui.authEmailDraft = email;
+    els.authNameFeedback.textContent = "";
+    els.authNameFeedback.className = "feedback";
+    renderAuth();
+    window.setTimeout(() => els.authNameInput.focus(), 0);
+  } catch {
+    els.authEmailFeedback.textContent = "I could not check that email right now. Please try again.";
+    els.authEmailFeedback.className = "feedback warning";
+  } finally {
+    state.ui.authBusy = false;
+    renderAuth();
+  }
+}
+
+async function handleNameRegistrationSubmit(event) {
+  event.preventDefault();
+  const email = normalizeEmail(state.ui.authEmailDraft);
+  const name = normalizeName(els.authNameInput.value);
+
+  if (!name) {
+    els.authNameFeedback.textContent = "Add your name so I can create the learner profile.";
+    els.authNameFeedback.className = "feedback warning";
+    return;
+  }
+
+  state.ui.authBusy = true;
+  els.authNameFeedback.textContent = "";
+  els.authNameFeedback.className = "feedback";
+  renderAuth();
+
+  try {
+    const learner = await registerLearner(email, name);
+    state.learner = {
+      email: normalizeEmail(learner.email),
+      name: normalizeName(learner.name)
+    };
+    state.progress = normalizeProgress(learner.progress);
+    state.ui.authStep = "email";
+    state.ui.authEmailDraft = "";
+    els.authEmailInput.value = state.learner.email;
+    els.authNameInput.value = "";
+    saveLearnerIdentity();
+    saveProgress();
+    state.recommendation = getRecommendation();
+    renderAll();
+  } catch {
+    els.authNameFeedback.textContent = "I could not create that learner profile right now. Please try again.";
+    els.authNameFeedback.className = "feedback warning";
+  } finally {
+    state.ui.authBusy = false;
+    renderAuth();
+  }
+}
+
+async function resetLearnerProgress() {
+  state.progress = structuredClone(defaultProgress);
+  state.recommendation = getRecommendation();
+  state.activeSession = null;
+  state.lastResult = null;
+  saveProgress();
+  renderAll();
+  alert("Learner profile reset.");
+}
+
+function switchLearner() {
+  if (state.activeSession && !window.confirm("Switching learners will close the current session. Continue?")) {
+    return;
+  }
+
+  state.learner = { ...defaultLearner };
+  state.progress = structuredClone(defaultProgress);
+  state.recommendation = getRecommendation();
+  state.activeSession = null;
+  state.lastResult = null;
+  state.ui.authStep = "email";
+  state.ui.authEmailDraft = "";
+  els.authEmailInput.value = "";
+  els.authNameInput.value = "";
+  els.authEmailFeedback.textContent = "";
+  els.authNameFeedback.textContent = "";
+  saveLearnerIdentity();
+  localStorage.removeItem(storageKey);
+  renderAll();
+  window.setTimeout(() => els.authEmailInput.focus(), 0);
+}
+
 function setAIBadge(text, tone) {
   state.api.badgeText = text;
   state.api.badgeTone = tone;
@@ -1031,6 +1237,18 @@ function setAIBadge(text, tone) {
 
 function saveProgress() {
   localStorage.setItem(storageKey, JSON.stringify(state.progress));
+  if (state.learner.email) {
+    void persistLearnerProfile();
+  }
+}
+
+function saveLearnerIdentity() {
+  if (!state.learner.email) {
+    localStorage.removeItem(learnerStorageKey);
+    return;
+  }
+
+  localStorage.setItem(learnerStorageKey, JSON.stringify(state.learner));
 }
 
 function updateStreak(progress) {
@@ -1054,6 +1272,8 @@ function updateStreak(progress) {
 
 function renderAll() {
   renderAIStatus();
+  renderLearnerHeader();
+  renderAuth();
   renderSnapshot();
   renderRecommendation();
   renderSkillSpots();
@@ -1066,11 +1286,55 @@ function renderAll() {
 function renderAIStatus() {
   els.aiStatus.textContent = state.api.badgeText;
   els.aiStatus.className = `ai-status ai-status-${state.api.badgeTone}`;
-  const lessonButtonsDisabled = state.ui.generatingSession;
+  const lessonButtonsDisabled = state.ui.generatingSession || !state.learner.email || state.ui.authBusy;
   els.studyNow.disabled = lessonButtonsDisabled;
   els.startRecommended.disabled = lessonButtonsDisabled;
-  els.studyNow.textContent = lessonButtonsDisabled ? "Generating AI lesson..." : "Start recommended lesson";
-  els.startRecommended.textContent = lessonButtonsDisabled ? "Generating session..." : "Begin session";
+  els.resetProgress.disabled = !state.learner.email || state.ui.authBusy;
+  els.switchLearner.disabled = state.ui.authBusy;
+  els.studyNow.textContent = state.ui.generatingSession
+    ? "Generating AI lesson..."
+    : state.learner.email
+      ? "Start recommended lesson"
+      : "Enter email to start";
+  els.startRecommended.textContent = state.ui.generatingSession
+    ? "Generating session..."
+    : state.learner.email
+      ? "Begin session"
+      : "Enter email first";
+}
+
+function renderLearnerHeader() {
+  if (state.learner.name) {
+    els.learnerGreeting.textContent = `Welcome back, ${state.learner.name}`;
+    els.learnerIdentity.textContent = state.learner.email;
+    return;
+  }
+
+  els.learnerGreeting.textContent = "Welcome to your German course";
+  els.learnerIdentity.textContent = "Sign in with an email to save your progress and continue across sessions.";
+}
+
+function renderAuth() {
+  const showAuth = !state.learner.email;
+  els.authOverlay.classList.toggle("hidden", !showAuth);
+  if (!showAuth) {
+    return;
+  }
+
+  const isEmailStep = state.ui.authStep === "email";
+  els.authEmailForm.classList.toggle("hidden", !isEmailStep);
+  els.authNameForm.classList.toggle("hidden", isEmailStep);
+  els.authCopy.textContent = isEmailStep
+    ? "Enter your email to load your saved path or create a new learner profile."
+    : "This email is new. Add your name and the app will create a learner profile for you.";
+  els.authEmailInput.disabled = state.ui.authBusy;
+  els.authEmailSubmit.disabled = state.ui.authBusy;
+  els.authNameInput.disabled = state.ui.authBusy;
+  els.authNameSubmit.disabled = state.ui.authBusy;
+  els.authBack.disabled = state.ui.authBusy;
+  els.authEmailSubmit.textContent = state.ui.authBusy && isEmailStep ? "Checking..." : "Continue";
+  els.authNameSubmit.textContent = state.ui.authBusy && !isEmailStep ? "Creating..." : "Create learner";
+  els.authEmailPreview.textContent = state.ui.authEmailDraft ? `Email: ${state.ui.authEmailDraft}` : "";
 }
 
 function renderSnapshot() {
@@ -1596,6 +1860,12 @@ function restartResultSource({ reviewMode }) {
 }
 
 async function startRecommendedSession() {
+  if (!state.learner.email) {
+    renderAuth();
+    window.setTimeout(() => els.authEmailInput.focus(), 0);
+    return;
+  }
+
   const recommendation = state.recommendation;
   const source =
     recommendation.kind === "qualification"
@@ -1838,8 +2108,85 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
+async function lookupLearner(email) {
+  const response = await fetchWithTimeout("/api/learner/lookup", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ email })
+  }, 12000);
+
+  if (!response.ok) {
+    throw new Error("Learner lookup failed");
+  }
+
+  return response.json();
+}
+
+async function registerLearner(email, name) {
+  const response = await fetchWithTimeout("/api/learner/register", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({
+      email,
+      name,
+      progress: structuredClone(defaultProgress)
+    })
+  }, 12000);
+
+  if (!response.ok) {
+    throw new Error("Learner registration failed");
+  }
+
+  const json = await response.json();
+  if (!json.ok || !json.learner) {
+    throw new Error(json.error || "Learner registration failed");
+  }
+
+  return json.learner;
+}
+
+async function persistLearnerProfile() {
+  if (!state.learner.email || window.location.protocol === "file:") {
+    return;
+  }
+
+  try {
+    await fetchWithTimeout("/api/learner/progress", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        email: state.learner.email,
+        name: state.learner.name,
+        progress: state.progress
+      })
+    }, 12000);
+  } catch {
+    // Keep the local profile usable even if remote saving is temporarily unavailable.
+  }
+}
+
+function normalizeEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!email || !email.includes("@") || email.startsWith("@") || email.endsWith("@")) {
+    return "";
+  }
+
+  return email;
+}
+
+function normalizeName(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").slice(0, 60);
+}
+
 function summarizeLearnerProfile() {
   return {
+    learnerName: state.learner.name,
     currentBand: getCurrentBand(),
     aiEstimate: state.progress.aiEstimate,
     skillScores: state.progress.skillScores,

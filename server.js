@@ -10,6 +10,8 @@ const HOST = process.env.HOST || "0.0.0.0";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
 const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-5-mini";
 const ROOT = __dirname;
+const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, ".data");
+const LEARNERS_PATH = path.join(DATA_DIR, "learners.json");
 
 const mimeTypes = {
   ".html": "text/html; charset=utf-8",
@@ -35,6 +37,72 @@ const server = http.createServer(async (req, res) => {
         ok: true,
         apiConfigured: Boolean(OPENAI_API_KEY),
         model: OPENAI_MODEL
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/learner/lookup") {
+      const body = await readJsonBody(req);
+      const email = normalizeEmail(body.email);
+      if (!email) {
+        return sendJson(res, 400, { ok: false, error: "Valid email is required." });
+      }
+
+      const learner = findLearnerByEmail(email);
+      return sendJson(res, 200, {
+        ok: true,
+        exists: Boolean(learner),
+        learner
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/learner/register") {
+      const body = await readJsonBody(req);
+      const email = normalizeEmail(body.email);
+      const name = normalizeName(body.name);
+
+      if (!email) {
+        return sendJson(res, 400, { ok: false, error: "Valid email is required." });
+      }
+
+      if (!name) {
+        return sendJson(res, 400, { ok: false, error: "Name is required." });
+      }
+
+      const existingLearner = findLearnerByEmail(email);
+      if (existingLearner) {
+        return sendJson(res, 409, { ok: false, error: "A learner with this email already exists." });
+      }
+
+      const learner = upsertLearner({
+        email,
+        name,
+        progress: body.progress || {}
+      });
+
+      return sendJson(res, 200, {
+        ok: true,
+        learner
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/learner/progress") {
+      const body = await readJsonBody(req);
+      const email = normalizeEmail(body.email);
+      const name = normalizeName(body.name);
+
+      if (!email) {
+        return sendJson(res, 400, { ok: false, error: "Valid email is required." });
+      }
+
+      const learner = upsertLearner({
+        email,
+        name,
+        progress: body.progress || {}
+      });
+
+      return sendJson(res, 200, {
+        ok: true,
+        learner
       });
     }
 
@@ -461,4 +529,66 @@ function loadDotEnv() {
       process.env[key] = value;
     }
   });
+}
+
+function ensureDataStore() {
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
+  }
+
+  if (!fs.existsSync(LEARNERS_PATH)) {
+    fs.writeFileSync(LEARNERS_PATH, JSON.stringify({ learners: {} }, null, 2));
+  }
+}
+
+function readLearnerStore() {
+  ensureDataStore();
+
+  try {
+    const raw = fs.readFileSync(LEARNERS_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && parsed.learners ? parsed : { learners: {} };
+  } catch {
+    return { learners: {} };
+  }
+}
+
+function writeLearnerStore(store) {
+  ensureDataStore();
+  fs.writeFileSync(LEARNERS_PATH, JSON.stringify(store, null, 2));
+}
+
+function findLearnerByEmail(email) {
+  const store = readLearnerStore();
+  return store.learners[email] || null;
+}
+
+function upsertLearner({ email, name, progress }) {
+  const store = readLearnerStore();
+  const now = new Date().toISOString();
+  const previous = store.learners[email] || null;
+  const learner = {
+    email,
+    name: name || previous?.name || "",
+    progress: progress && typeof progress === "object" ? progress : previous?.progress || {},
+    createdAt: previous?.createdAt || now,
+    updatedAt: now
+  };
+
+  store.learners[email] = learner;
+  writeLearnerStore(store);
+  return learner;
+}
+
+function normalizeEmail(value) {
+  const email = String(value || "").trim().toLowerCase();
+  if (!email || !email.includes("@") || email.startsWith("@") || email.endsWith("@")) {
+    return "";
+  }
+
+  return email;
+}
+
+function normalizeName(value) {
+  return String(value || "").trim().replace(/\s+/g, " ").slice(0, 60);
 }

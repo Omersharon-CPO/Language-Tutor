@@ -62,10 +62,11 @@ The project includes a [`railway.toml`](./railway.toml) file that sets:
 - Do not commit `.env`. It is ignored by `.gitignore`.
 - Railway automatically injects `PORT`, and the server already listens on it.
 - Railway healthchecks require an HTTP `200` response; this app exposes that on `/api/status`.
+- Learner profiles are stored server-side by email. For durable storage on Railway, mount a volume and set `DATA_DIR` to that mount path.
 
 ## Next ideas
 
 - Add realtime speaking practice with the Realtime API
-- Persist learner history in SQLite instead of browser-only storage
+- Replace the JSON learner store with SQLite or Postgres for stronger multi-user durability
 - Add teacher review tools and analytics for weak grammar patterns
-- Sync progress across devices and add learner accounts
+- Add email verification and passwordless sign-in when identity needs to be trusted

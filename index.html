@@ -18,6 +18,12 @@
         <div class="hero-copy">
           <p class="eyebrow">Adaptive German coaching</p>
           <div id="ai-status" class="ai-status ai-status-muted">AI status checking...</div>
+          <div class="learner-banner">
+            <p id="learner-greeting" class="learner-greeting">Welcome to your German course</p>
+            <p id="learner-identity" class="learner-identity">
+              Sign in with an email to save your progress and continue across sessions.
+            </p>
+          </div>
           <h1>Deutsch Trainer</h1>
           <p class="hero-text">
             Finish lessons, get graded, and let the app choose the next move
@@ -27,6 +33,7 @@
           <div class="hero-actions">
             <button id="study-now" class="primary-button">Start recommended lesson</button>
             <button id="reset-progress" class="ghost-button">Reset learner profile</button>
+            <button id="switch-learner" class="ghost-button">Use another email</button>
           </div>
         </div>
         <div class="hero-card">
@@ -187,6 +194,48 @@
           <div id="history-list" class="history-list"></div>
         </section>
       </main>
+    </div>
+
+    <div id="auth-overlay" class="auth-overlay hidden">
+      <section class="auth-card">
+        <p class="eyebrow">Learner profile</p>
+        <h2>Save your course progress</h2>
+        <p id="auth-copy" class="lesson-description">
+          Enter your email to load your saved path or create a new learner profile.
+        </p>
+
+        <form id="auth-email-form" class="auth-form">
+          <label class="prompt-label" for="auth-email-input">Email</label>
+          <input
+            id="auth-email-input"
+            class="challenge-input"
+            type="email"
+            autocomplete="email"
+            placeholder="you@example.com"
+          />
+          <p id="auth-email-feedback" class="feedback"></p>
+          <div class="trainer-actions">
+            <button id="auth-email-submit" type="submit" class="primary-button">Continue</button>
+          </div>
+        </form>
+
+        <form id="auth-name-form" class="auth-form hidden">
+          <p id="auth-email-preview" class="note"></p>
+          <label class="prompt-label" for="auth-name-input">Your name</label>
+          <input
+            id="auth-name-input"
+            class="challenge-input"
+            type="text"
+            autocomplete="name"
+            placeholder="Omer"
+          />
+          <p id="auth-name-feedback" class="feedback"></p>
+          <div class="trainer-actions">
+            <button id="auth-name-submit" type="submit" class="primary-button">Create learner</button>
+            <button id="auth-back" type="button" class="ghost-button">Use different email</button>
+          </div>
+        </form>
+      </section>
     </div>
 
     <script src="./app.js"></script>
