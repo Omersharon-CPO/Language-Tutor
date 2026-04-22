@@ -1671,30 +1671,46 @@ async function handleTextChallengeSubmit(event) {
   }
 
   state.sessionFeedbackLocked = true;
-  state.ui.gradingAnswer = true;
   els.nextChallenge.disabled = false;
   els.submitAnswer.disabled = true;
   els.submitAnswer.textContent = "Checking answer...";
   els.challengeInput.disabled = true;
-  startChallengeStatusTimer(
-    state.api.configured ? "Answer received. Checking with AI..." : "Answer received. Checking locally..."
-  );
-  els.challengeFeedback.textContent = "Your answer was submitted. Grading is in progress.";
+  const localCorrect = evaluateTextAnswer(typedAnswer, challenge);
+
+  if (!localCorrect) {
+    state.ui.gradingAnswer = true;
+    startChallengeStatusTimer(
+      state.api.configured ? "Answer received. Checking with AI..." : "Answer received. Checking locally..."
+    );
+    els.challengeFeedback.textContent = "Your answer was submitted. Grading is in progress.";
+  } else {
+    els.challengeStatus.textContent = "Answer checked instantly.";
+    els.challengeStatus.className = "challenge-status ready";
+    els.challengeFeedback.textContent = "Exact match detected. No AI grading was needed.";
+  }
   els.challengeFeedback.className = "feedback";
 
   let grade = null;
 
-  if (state.api.configured) {
+  if (!localCorrect && state.api.configured) {
     grade = await gradeAnswerWithAPI(challenge, typedAnswer);
   }
   state.ui.gradingAnswer = false;
   els.submitAnswer.textContent = "Checked";
 
-  const correct = grade ? grade.correct : evaluateTextAnswer(typedAnswer, challenge);
+  const correct = localCorrect || Boolean(grade?.correct);
   let openedDeepDive = false;
   if (correct) {
-    stopChallengeStatusTimer("Grading complete.", "ready");
-    els.challengeFeedback.textContent = grade?.feedback || `Correct. ${challenge.explanation}`;
+    if (!localCorrect) {
+      stopChallengeStatusTimer("Grading complete.", "ready");
+    }
+    const recordResult = recordChallengeAnswer(challenge, correct, typedAnswer, grade);
+    els.challengeFeedback.textContent = buildCorrectAnswerFeedback({
+      challenge,
+      grade,
+      localCorrect,
+      recordResult
+    });
     els.challengeFeedback.className = "feedback success";
   } else {
     const remediationTopics = grade?.remediationTopics?.length
@@ -1712,9 +1728,9 @@ async function handleTextChallengeSubmit(event) {
         ? buildRemediationFeedback(grade, remediationTopics)
         : grade?.feedback || `Not quite. A strong answer is "${challenge.answer}". ${challenge.explanation}`;
     els.challengeFeedback.className = "feedback warning";
+    recordChallengeAnswer(challenge, correct, typedAnswer, grade);
   }
 
-  recordChallengeAnswer(challenge, correct, typedAnswer, grade);
   if (openedDeepDive) {
     renderLessonProgress(state.activeSession, null);
     renderBranchPanel(state.activeSession, null);
@@ -1743,6 +1759,12 @@ function recordChallengeAnswer(challenge, correct, response, grade = null) {
     grade
   });
 
+  const result = {
+    topicCompleted: false,
+    topicTitle: "",
+    openTopicsRemaining: 0
+  };
+
   if (challenge.remediationTopicId && session.remediation?.topics[challenge.remediationTopicId]) {
     const topic = session.remediation.topics[challenge.remediationTopicId];
     topic.attempts += 1;
@@ -1753,11 +1775,18 @@ function recordChallengeAnswer(challenge, correct, response, grade = null) {
       const openTopics = getOpenRemediationTopics(session);
       session.remediation.activeTopicId = openTopics.length === 1 ? openTopics[0].id : null;
       session.remediation.junctionOpen = openTopics.length > 1;
+      result.topicCompleted = true;
+      result.topicTitle = topic.title;
+      result.openTopicsRemaining = openTopics.length;
     } else {
       session.remediation.activeTopicId = topic.id;
       ensureRemediationRunway(session, topic.id);
+      result.topicTitle = topic.title;
+      result.openTopicsRemaining = getOpenRemediationTopics(session).length;
     }
   }
+
+  return result;
 }
 
 function evaluateTextAnswer(response, challenge) {
@@ -2369,6 +2398,25 @@ function buildRemediationFeedback(grade, topics) {
     ? `I opened 1 rabbit hole for ${topics[0].title.toLowerCase()}.`
     : `I opened ${topics.length} rabbit holes: ${topics.map((topic) => topic.title).join(" and ")}.`;
   return `${summary} I spotted ${diagnoses.join(" ")} ${lead} Choose one below to start.`;
+}
+
+function buildCorrectAnswerFeedback({ challenge, grade, localCorrect, recordResult }) {
+  const base = grade?.feedback || `Correct. ${challenge.explanation}`;
+
+  if (!challenge.remediationTopicId) {
+    return localCorrect ? `Correct. ${challenge.explanation}` : base;
+  }
+
+  if (recordResult?.topicCompleted) {
+    const followup = recordResult.openTopicsRemaining
+      ? `Rabbit hole cleared: ${recordResult.topicTitle}. Nice work. Choose the next open rabbit hole to keep going.`
+      : `Rabbit hole cleared: ${recordResult.topicTitle}. Nice work. You earned your way back to the lesson path.`;
+    return `${base} ${followup}`;
+  }
+
+  return localCorrect
+    ? `Correct. ${challenge.explanation} Keep going, you are still inside this rabbit hole.`
+    : base;
 }
 
 function getNextChallengeLabel(session, challenge, remediationTopic, isLastChallenge) {
