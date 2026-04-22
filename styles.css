@@ -479,22 +479,39 @@ h2 {
 }
 
 .branch-card {
+  width: 100%;
   display: grid;
   gap: 8px;
   padding: 12px 14px;
   border-radius: 18px;
   background: rgba(255, 249, 240, 0.92);
   border: 1px solid rgba(209, 91, 52, 0.12);
+  text-align: left;
+  cursor: pointer;
 }
 
 .branch-card.active {
   background: rgba(255, 244, 229, 0.95);
   border-color: rgba(209, 91, 52, 0.2);
+  box-shadow: 0 10px 22px rgba(209, 91, 52, 0.08);
 }
 
 .branch-card.done {
   background: rgba(245, 252, 247, 0.95);
   border-color: rgba(47, 125, 74, 0.16);
+  cursor: default;
+}
+
+.branch-card p {
+  margin: 0;
+}
+
+.branch-card:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.branch-card:disabled {
+  opacity: 0.82;
 }
 
 .branch-title-row {

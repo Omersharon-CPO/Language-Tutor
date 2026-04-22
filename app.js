@@ -1537,6 +1537,10 @@ function renderSessionContent(session) {
 function renderChallenge() {
   const session = state.activeSession;
   pruneResolvedRemediationChallenges(session);
+  if (shouldShowBranchJunction(session)) {
+    renderBranchJunction(session);
+    return;
+  }
   const challenge = session.challenges[session.challengeIndex];
   const isLastChallenge = session.challengeIndex === session.challenges.length - 1;
   const mainProgress = getMainLessonProgress(session);
@@ -1588,6 +1592,28 @@ function renderChallenge() {
     button.addEventListener("click", () => handleChoiceChallengeAnswer(button, option, challenge));
     els.challengeOptions.appendChild(button);
   });
+}
+
+function renderBranchJunction(session) {
+  const mainProgress = getMainLessonProgress(session);
+  els.challengePrompt.textContent = "Choose which rabbit hole to clear next";
+  els.challengeSkill.textContent = "Branch junction";
+  els.challengeMode.textContent = "Pick one open weak spot below to continue.";
+  els.challengeProgress.textContent = `Lesson ${Math.min(mainProgress.completed + 1, mainProgress.total)} / ${mainProgress.total}`;
+  renderLessonProgress(session, null);
+  renderBranchPanel(session, null);
+  renderRemediationStatus(session, null);
+  els.challengeOptions.innerHTML = "";
+  els.challengeForm.classList.add("hidden");
+  els.challengeOptions.classList.add("hidden");
+  stopChallengeStatusTimer();
+  els.challengeStatus.textContent = "";
+  els.challengeStatus.className = "challenge-status hidden";
+  els.challengeFeedback.textContent = "Two or more rabbit holes are open. Choose one to work on next.";
+  els.challengeFeedback.className = "feedback";
+  els.nextChallenge.disabled = true;
+  els.nextChallenge.textContent = "Choose rabbit hole";
+  state.sessionFeedbackLocked = false;
 }
 
 function handleChoiceChallengeAnswer(button, selected, challenge) {
@@ -1683,14 +1709,17 @@ async function handleTextChallengeSubmit(event) {
     stopChallengeStatusTimer("Grading complete.", "ready");
     els.challengeFeedback.textContent =
       openedDeepDive
-        ? `${grade.feedback} Deep dives are now open below. Clear each one with 5 correct answers in a row.`
+        ? buildRemediationFeedback(grade, remediationTopics)
         : grade?.feedback || `Not quite. A strong answer is "${challenge.answer}". ${challenge.explanation}`;
     els.challengeFeedback.className = "feedback warning";
   }
 
   recordChallengeAnswer(challenge, correct, typedAnswer, grade);
   if (openedDeepDive) {
-    els.nextChallenge.textContent = "Start deep dive";
+    renderLessonProgress(state.activeSession, null);
+    renderBranchPanel(state.activeSession, null);
+    renderRemediationStatus(state.activeSession, null);
+    els.nextChallenge.textContent = state.activeSession?.remediation?.junctionOpen ? "Choose rabbit hole" : "Start deep dive";
   }
 }
 
@@ -1712,7 +1741,11 @@ function recordChallengeAnswer(challenge, correct, response, grade = null) {
     topic.completed = topic.streak >= topic.targetStreak;
     if (topic.completed) {
       pruneResolvedRemediationChallenges(session);
+      const openTopics = getOpenRemediationTopics(session);
+      session.remediation.activeTopicId = openTopics.length === 1 ? openTopics[0].id : null;
+      session.remediation.junctionOpen = openTopics.length > 1;
     } else {
+      session.remediation.activeTopicId = topic.id;
       ensureRemediationRunway(session, topic.id);
     }
   }
@@ -1738,6 +1771,11 @@ function normalizeGerman(value) {
 function advanceChallenge() {
   const session = state.activeSession;
   if (!session) {
+    return;
+  }
+
+  if (shouldShowBranchJunction(session)) {
+    renderChallenge();
     return;
   }
 
@@ -1975,6 +2013,8 @@ function startSessionFromContent(content, kind, options = {}) {
     answers: [],
     mainChallengeIds: initialChallenges.map((challenge) => challenge.id || challenge.prompt),
     remediation: {
+      activeTopicId: null,
+      junctionOpen: false,
       topics: {},
       openedFromChallengeIds: []
     },
@@ -2128,6 +2168,9 @@ async function openRemediationPaths(challenge, learnerAnswer, grade) {
   });
 
   session.challenges.splice(insertionIndex, 0, ...queuedChallenges);
+  const openTopics = getOpenRemediationTopics(session);
+  session.remediation.activeTopicId = openTopics.length === 1 ? openTopics[0].id : null;
+  session.remediation.junctionOpen = openTopics.length > 1;
   return true;
 }
 
@@ -2228,8 +2271,10 @@ function renderBranchPanel(session, activeTopic) {
   els.branchList.innerHTML = "";
 
   topics.forEach((topic) => {
-    const card = document.createElement("article");
+    const card = document.createElement("button");
     card.className = "branch-card";
+    card.type = "button";
+    card.disabled = topic.completed;
     if (activeTopic?.id === topic.id) {
       card.classList.add("active");
     }
@@ -2243,12 +2288,17 @@ function renderBranchPanel(session, activeTopic) {
       </div>
       <p class="note">${topic.description}</p>
     `;
+    if (!topic.completed) {
+      card.addEventListener("click", () => {
+        enterRemediationTopic(session, topic.id);
+      });
+    }
     els.branchList.appendChild(card);
   });
 }
 
 function getNextChallengeIndex(session) {
-  const activeBranchIndex = findNextActiveBranchChallengeIndex(session, session.challengeIndex);
+  const activeBranchIndex = findNextActiveBranchChallengeIndex(session, session.challengeIndex, session.remediation.activeTopicId);
   if (activeBranchIndex !== -1) {
     return activeBranchIndex;
   }
@@ -2263,10 +2313,14 @@ function getNextChallengeIndex(session) {
   return session.challengeIndex + 1;
 }
 
-function findNextActiveBranchChallengeIndex(session, currentIndex) {
+function findNextActiveBranchChallengeIndex(session, currentIndex, topicId = null) {
   for (let index = currentIndex + 1; index < session.challenges.length; index += 1) {
     const challenge = session.challenges[index];
     if (!challenge.remediationTopicId) {
+      continue;
+    }
+
+    if (topicId && challenge.remediationTopicId !== topicId) {
       continue;
     }
 
@@ -2277,6 +2331,33 @@ function findNextActiveBranchChallengeIndex(session, currentIndex) {
   }
 
   return -1;
+}
+
+function shouldShowBranchJunction(session) {
+  return Boolean(session?.remediation?.junctionOpen);
+}
+
+function getOpenRemediationTopics(session) {
+  return Object.values(session.remediation?.topics || {}).filter((topic) => !topic.completed);
+}
+
+function enterRemediationTopic(session, topicId) {
+  session.remediation.activeTopicId = topicId;
+  session.remediation.junctionOpen = false;
+  const targetIndex = findNextActiveBranchChallengeIndex(session, session.challengeIndex - 1, topicId);
+  if (targetIndex !== -1) {
+    session.challengeIndex = targetIndex;
+  }
+  renderChallenge();
+}
+
+function buildRemediationFeedback(grade, topics) {
+  const summary = grade?.feedback || "Not quite.";
+  const diagnoses = topics.map((topic) => `${topic.title}: ${topic.learnerPattern || topic.whyItMatters}`);
+  const lead = topics.length === 1
+    ? `I opened 1 rabbit hole for ${topics[0].title.toLowerCase()}.`
+    : `I opened ${topics.length} rabbit holes: ${topics.map((topic) => topic.title).join(" and ")}.`;
+  return `${summary} I spotted ${diagnoses.join(" ")} ${lead} Choose one below to start.`;
 }
 
 async function estimateLevelWithAPI(payload) {
