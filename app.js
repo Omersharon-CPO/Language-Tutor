@@ -1571,7 +1571,7 @@ function renderChallenge() {
   els.challengeFeedback.textContent = "";
   els.challengeFeedback.className = "feedback";
   els.nextChallenge.disabled = true;
-  els.nextChallenge.textContent = isLastChallenge ? "Finish lesson" : remediationTopic ? "Return to lesson path" : "Next prompt";
+  els.nextChallenge.textContent = getNextChallengeLabel(session, challenge, remediationTopic, isLastChallenge);
   state.sessionFeedbackLocked = false;
 
   if (challenge.type === "text") {
@@ -1720,6 +1720,15 @@ async function handleTextChallengeSubmit(event) {
     renderBranchPanel(state.activeSession, null);
     renderRemediationStatus(state.activeSession, null);
     els.nextChallenge.textContent = state.activeSession?.remediation?.junctionOpen ? "Choose rabbit hole" : "Start deep dive";
+  } else if (challenge.remediationTopicId) {
+    const topic = state.activeSession?.remediation?.topics?.[challenge.remediationTopicId];
+    if (topic?.completed) {
+      els.nextChallenge.textContent = state.activeSession?.remediation?.junctionOpen
+        ? "Choose next rabbit hole"
+        : "Resume lesson path";
+    } else {
+      els.nextChallenge.textContent = "Continue rabbit hole";
+    }
   }
 }
 
@@ -2012,6 +2021,7 @@ function startSessionFromContent(content, kind, options = {}) {
     challengeIndex: 0,
     answers: [],
     mainChallengeIds: initialChallenges.map((challenge) => challenge.id || challenge.prompt),
+    remediationSourceItems: buildRemediationSourceItems(content, initialChallenges),
     remediation: {
       activeTopicId: null,
       junctionOpen: false,
@@ -2148,6 +2158,7 @@ async function openRemediationPaths(challenge, learnerAnswer, grade) {
       skill: topic.skill,
       model: {
         answer: challenge.answer,
+        english: challenge.prompt.replace(/^Type the German sentence for:\s*/i, "").trim(),
         acceptedAnswers: challenge.acceptedAnswers || [challenge.answer],
         prompt: challenge.prompt
       },
@@ -2360,6 +2371,22 @@ function buildRemediationFeedback(grade, topics) {
   return `${summary} I spotted ${diagnoses.join(" ")} ${lead} Choose one below to start.`;
 }
 
+function getNextChallengeLabel(session, challenge, remediationTopic, isLastChallenge) {
+  if (isLastChallenge) {
+    return "Finish lesson";
+  }
+
+  if (!remediationTopic) {
+    return "Next prompt";
+  }
+
+  if (remediationTopic.completed) {
+    return session.remediation.junctionOpen ? "Choose next rabbit hole" : "Resume lesson path";
+  }
+
+  return "Continue rabbit hole";
+}
+
 async function estimateLevelWithAPI(payload) {
   try {
     const response = await fetchWithTimeout("/api/estimate-level", {
@@ -2466,9 +2493,13 @@ function ensureRemediationRunway(session, topicId) {
 
   const fallbackChallenges = Array.from({ length: needed }, (_, index) => ({
     ...(function buildTopUp() {
+      const variant = getRemediationVariant(session, topic.id, topic.attempts + index, {
+        german: topic.model.answer,
+        english: topic.model.english || topic.model.prompt
+      });
       const answer = selectFallbackRemediationAnswer(
         {
-          answer: topic.model.answer
+          answer: variant.german
         },
         {
           key: topic.id
@@ -2481,7 +2512,8 @@ function ensureRemediationRunway(session, topicId) {
     prompt: buildFallbackRemediationPrompt(
       {
         prompt: topic.model.prompt,
-        answer: topic.model.answer,
+        answer: variant.german,
+        english: variant.english,
         acceptedAnswers: topic.model.acceptedAnswers,
         skill: topic.skill
       },
@@ -2508,17 +2540,36 @@ function ensureRemediationRunway(session, topicId) {
 }
 
 function buildFallbackRemediationTopics(challenge, grade, topics) {
+  const session = state.activeSession;
   return topics.map((topic) => ({
     topicKey: topic.key,
     title: topic.title,
     description: topic.whyItMatters,
     skill: topic.skill || challenge.skill,
     challenges: Array.from({ length: 5 }, (_, index) => {
-      const answer = selectFallbackRemediationAnswer(challenge, topic);
+      const variant = getRemediationVariant(session, topic.key, index, {
+        german: challenge.answer,
+        english: challenge.prompt.replace(/^Type the German sentence for:\s*/i, "").trim()
+      });
+      const answer = selectFallbackRemediationAnswer(
+        {
+          ...challenge,
+          answer: variant.german
+        },
+        topic
+      );
       return {
         id: `${challenge.id || "challenge"}-${topic.key}-fallback-${index}`,
         type: "text",
-        prompt: buildFallbackRemediationPrompt(challenge, topic, index),
+        prompt: buildFallbackRemediationPrompt(
+          {
+            ...challenge,
+            answer: variant.german,
+            english: variant.english
+          },
+          topic,
+          index
+        ),
         skill: topic.skill || challenge.skill,
         explanation: topic.whyItMatters,
         answer,
@@ -2549,7 +2600,7 @@ function buildFallbackRemediationPrompt(challenge, topic, index) {
   }
 
   if (topic.key === "spelling") {
-    const englishCue = challenge.prompt.replace(/^Type the German sentence for:\s*/i, "");
+    const englishCue = challenge.english || challenge.prompt.replace(/^Type the German sentence for:\s*/i, "");
     const variants = [
       `Type the correctly spelled German sentence: ${englishCue}`,
       `Correct the spelling and type the German sentence for: ${englishCue}`,
@@ -2559,11 +2610,11 @@ function buildFallbackRemediationPrompt(challenge, topic, index) {
   }
 
   if (topic.key === "article_case") {
-    return `Type the sentence with the correct article and case: ${challenge.prompt.replace(/^Type the German sentence for:\s*/i, "")}`;
+    return `Type the sentence with the correct article and case: ${challenge.english || challenge.prompt.replace(/^Type the German sentence for:\s*/i, "")}`;
   }
 
   if (topic.key === "meaning") {
-    return `Try again with the full natural German phrase: ${challenge.prompt.replace(/^Type the German sentence for:\s*/i, "")}`;
+    return `Try again with the full natural German phrase: ${challenge.english || challenge.prompt.replace(/^Type the German sentence for:\s*/i, "")}`;
   }
 
   return `Correct this weak spot (${topic.title.toLowerCase()}): ${challenge.prompt}`;
@@ -2593,6 +2644,57 @@ function decapitalizePromptAnswer(answer, index) {
     .split(" ")
     .map((token) => token.toLowerCase())
     .join(" ");
+}
+
+function buildRemediationSourceItems(content, challenges) {
+  const items = [];
+
+  [...(content.points || []), ...((content.grammar && content.grammar.examples) || [])].forEach((item) => {
+    if (item?.german && item?.english) {
+      items.push({
+        german: item.german,
+        english: item.english
+      });
+    }
+  });
+
+  (challenges || []).forEach((challenge) => {
+    const english = challenge.prompt?.replace(/^Type the German sentence for:\s*/i, "").trim();
+    if (challenge.answer && english && english !== challenge.prompt) {
+      items.push({
+        german: challenge.answer,
+        english
+      });
+    }
+  });
+
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = `${normalizeGerman(item.german)}::${item.english.toLowerCase()}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
+function getRemediationVariant(session, topicKey, index, fallbackItem) {
+  const pool = session?.remediationSourceItems?.length
+    ? session.remediationSourceItems
+    : fallbackItem?.german
+      ? [fallbackItem]
+      : [];
+
+  if (!pool.length) {
+    return {
+      german: fallbackItem?.german || "",
+      english: fallbackItem?.english || ""
+    };
+  }
+
+  const offset = [...topicKey].reduce((sum, char) => sum + char.charCodeAt(0), 0);
+  return pool[(index + offset) % pool.length];
 }
 
 function inferRemediationTopicsLocally(challenge, learnerAnswer) {
