@@ -2180,11 +2180,13 @@ async function openRemediationPaths(challenge, learnerAnswer, grade) {
   const queuedChallenges = [];
 
   topicsToOpen.forEach((topic) => {
+    const sourceItems = selectTopicSourceItems(session, topic, challenge);
     session.remediation.topics[topic.topicKey] = {
       id: topic.topicKey,
       title: topic.title,
       description: topic.description,
       skill: topic.skill,
+      sourceItems,
       model: {
         answer: challenge.answer,
         english: challenge.prompt.replace(/^Type the German sentence for:\s*/i, "").trim(),
@@ -2295,7 +2297,8 @@ function renderLessonProgress(session, activeTopic) {
 }
 
 function renderBranchPanel(session, activeTopic) {
-  const topics = Object.values(session.remediation?.topics || {});
+  const allTopics = Object.values(session.remediation?.topics || {});
+  const topics = activeTopic ? allTopics.filter((topic) => topic.id === activeTopic.id || topic.completed) : allTopics;
   if (!topics.length) {
     els.branchPanel.classList.add("hidden");
     els.branchList.innerHTML = "";
@@ -2304,9 +2307,11 @@ function renderBranchPanel(session, activeTopic) {
   }
 
   els.branchPanel.classList.remove("hidden");
-  const openCount = topics.filter((topic) => !topic.completed).length;
+  const openCount = allTopics.filter((topic) => !topic.completed).length;
   els.branchNote.textContent = activeTopic
-    ? `You are inside a branch. Clear it, then the lesson path resumes.`
+    ? openCount > 1
+      ? `You are inside one branch. The others will come back after you clear this one.`
+      : `You are inside a branch. Clear it, then the lesson path resumes.`
     : `${openCount} branch${openCount === 1 ? "" : "es"} currently open`;
   els.branchList.innerHTML = "";
 
@@ -2544,7 +2549,7 @@ function ensureRemediationRunway(session, topicId) {
       const variant = getRemediationVariant(session, topic.id, topic.attempts + index, {
         german: topic.model.answer,
         english: topic.model.english || topic.model.prompt
-      });
+      }, topic);
       const answer = selectFallbackRemediationAnswer(
         {
           answer: variant.german
@@ -2598,7 +2603,7 @@ function buildFallbackRemediationTopics(challenge, grade, topics) {
       const variant = getRemediationVariant(session, topic.key, index, {
         german: challenge.answer,
         english: challenge.prompt.replace(/^Type the German sentence for:\s*/i, "").trim()
-      });
+      }, topic);
       const answer = selectFallbackRemediationAnswer(
         {
           ...challenge,
@@ -2727,9 +2732,14 @@ function buildRemediationSourceItems(content, challenges) {
   });
 }
 
-function getRemediationVariant(session, topicKey, index, fallbackItem) {
-  const pool = session?.remediationSourceItems?.length
-    ? session.remediationSourceItems
+function getRemediationVariant(session, topicKey, index, fallbackItem, topic = null) {
+  const topicItems = topic?.sourceItems?.length
+    ? topic.sourceItems
+    : session?.remediation?.topics?.[topicKey]?.sourceItems || [];
+  const pool = topicItems.length
+    ? topicItems
+    : session?.remediationSourceItems?.length
+      ? session.remediationSourceItems
     : fallbackItem?.german
       ? [fallbackItem]
       : [];
@@ -2743,6 +2753,42 @@ function getRemediationVariant(session, topicKey, index, fallbackItem) {
 
   const offset = [...topicKey].reduce((sum, char) => sum + char.charCodeAt(0), 0);
   return pool[(index + offset) % pool.length];
+}
+
+function selectTopicSourceItems(session, topic, challenge) {
+  const allItems = session?.remediationSourceItems?.length
+    ? session.remediationSourceItems
+    : [{
+        german: challenge.answer,
+        english: challenge.prompt.replace(/^Type the German sentence for:\s*/i, "").trim()
+      }];
+
+  const challengeWords = new Set(
+    normalizeGerman(challenge.answer)
+      .split(" ")
+      .filter((word) => word.length > 2)
+  );
+  const topicText = `${topic.title} ${topic.description} ${topic.learnerPattern || ""}`.toLowerCase();
+
+  const focused = allItems.filter((item) => {
+    const itemGerman = normalizeGerman(item.german);
+    const sharesWord = [...challengeWords].some((word) => itemGerman.includes(word));
+    if (sharesWord) {
+      return true;
+    }
+
+    if (topicText.includes("capital") || topic.key === "capitalization") {
+      return /^[A-ZÄÖÜ]/.test(item.german.trim());
+    }
+
+    if (topicText.includes("spell") || topicText.includes("rechtschreib") || topic.key === "spelling") {
+      return [...challengeWords].some((word) => word.length >= 4 && itemGerman.includes(word.slice(0, Math.max(3, word.length - 2))));
+    }
+
+    return false;
+  });
+
+  return focused.length ? focused.slice(0, 6) : allItems.slice(0, 4);
 }
 
 function inferRemediationTopicsLocally(challenge, learnerAnswer) {
