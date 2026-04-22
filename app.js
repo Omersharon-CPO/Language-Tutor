@@ -1723,10 +1723,13 @@ async function handleTextChallengeSubmit(event) {
       });
     }
     stopChallengeStatusTimer("Grading complete.", "ready");
-    els.challengeFeedback.textContent =
+    els.challengeFeedback.textContent = buildIncorrectAnswerFeedback({
+      challenge,
+      learnerAnswer: typedAnswer,
+      grade,
+      remediationTopics,
       openedDeepDive
-        ? buildRemediationFeedback(grade, remediationTopics)
-        : grade?.feedback || `Not quite. A strong answer is "${challenge.answer}". ${challenge.explanation}`;
+    });
     els.challengeFeedback.className = "feedback warning";
     recordChallengeAnswer(challenge, correct, typedAnswer, grade);
   }
@@ -2405,6 +2408,156 @@ function buildRemediationFeedback(grade, topics) {
   return `${summary} I spotted ${diagnoses.join(" ")} ${lead} Choose one below to start.`;
 }
 
+function buildIncorrectAnswerFeedback({ challenge, learnerAnswer, grade, remediationTopics, openedDeepDive }) {
+  const summary = buildSpecificMistakeSummary(challenge, learnerAnswer, remediationTopics, grade);
+  const answerLine = `A strong answer is "${challenge.answer}".`;
+
+  if (!openedDeepDive || !remediationTopics.length) {
+    return `${summary} ${answerLine}`;
+  }
+
+  const lead = remediationTopics.length === 1
+    ? `I opened 1 rabbit hole for ${remediationTopics[0].title.toLowerCase()}.`
+    : `I opened ${remediationTopics.length} rabbit holes: ${remediationTopics.map((topic) => topic.title).join(" and ")}.`;
+  return `${summary} ${answerLine} ${lead} Choose one below to start.`;
+}
+
+function buildSpecificMistakeSummary(challenge, learnerAnswer, remediationTopics, grade) {
+  const topics = remediationTopics || [];
+  const expectedWords = tokenizeGerman(challenge.answer || "");
+  const responseWords = tokenizeGerman(learnerAnswer || "");
+  const topicKeys = new Set(topics.map((topic) => topic.key));
+  const details = [];
+
+  if (topicKeys.has("article_case")) {
+    const articleExplanation = buildArticleCaseExplanation(expectedWords, responseWords);
+    if (articleExplanation) {
+      details.push(articleExplanation);
+    }
+  }
+
+  if (topicKeys.has("capitalization")) {
+    const capitalizationExplanation = buildCapitalizationExplanation(expectedWords, responseWords);
+    if (capitalizationExplanation) {
+      details.push(capitalizationExplanation);
+    }
+  }
+
+  if (topicKeys.has("spelling")) {
+    const spellingExplanation = buildSpellingExplanation(expectedWords, responseWords);
+    if (spellingExplanation) {
+      details.push(spellingExplanation);
+    }
+  }
+
+  if (topicKeys.has("meaning")) {
+    details.push("The sentence is understandable, but it does not match the target German phrase closely enough yet.");
+  }
+
+  const uniqueDetails = [...new Set(details.filter(Boolean))];
+  if (uniqueDetails.length) {
+    return `Not quite. ${uniqueDetails.join(" ")}`;
+  }
+
+  return grade?.feedback || `Not quite. ${challenge.explanation}`;
+}
+
+function tokenizeGerman(value) {
+  return String(value || "")
+    .replace(/[.,!?;:()[\]"]/g, "")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function buildArticleCaseExplanation(expectedWords, responseWords) {
+  for (let index = 0; index < expectedWords.length; index += 1) {
+    const expectedWord = expectedWords[index];
+    const responseWord = responseWords[index];
+
+    if (!isArticleWord(expectedWord)) {
+      continue;
+    }
+
+    if ((responseWord || "").toLowerCase() === expectedWord.toLowerCase()) {
+      continue;
+    }
+
+    const noun = expectedWords[index + 1] || "the noun";
+    const usedWord = responseWord ? `"${responseWord}"` : "no article";
+
+    if (expectedWord.toLowerCase() === "einen") {
+      return `Use "einen" before "${noun}" here, not ${usedWord}, because "${noun}" is masculine and this request uses the accusative form "einen".`;
+    }
+
+    if (expectedWord.toLowerCase() === "eine") {
+      return `Use "eine" before "${noun}" here, not ${usedWord}, because this phrase needs the feminine accusative form "eine".`;
+    }
+
+    if (expectedWord.toLowerCase() === "ein") {
+      return `Use "ein" before "${noun}" here, not ${usedWord}, because this phrase keeps the base article form "ein".`;
+    }
+
+    return `The article needs to be "${expectedWord}" here, not ${usedWord}, so the noun phrase sounds natural in German.`;
+  }
+
+  return "";
+}
+
+function buildCapitalizationExplanation(expectedWords, responseWords) {
+  for (let index = 0; index < expectedWords.length; index += 1) {
+    const expectedWord = expectedWords[index];
+    const responseWord = responseWords[index];
+    if (!responseWord) {
+      continue;
+    }
+
+    if (expectedWord.toLowerCase() === responseWord.toLowerCase() && expectedWord !== responseWord) {
+      return `Watch the letter case: write "${expectedWord}", not "${responseWord}", so the sentence opening and nouns follow German capitalization.`;
+    }
+  }
+
+  return "";
+}
+
+function buildSpellingExplanation(expectedWords, responseWords) {
+  for (let index = 0; index < expectedWords.length; index += 1) {
+    const expectedWord = expectedWords[index];
+    const responseWord = responseWords[index];
+    if (!responseWord || isArticleWord(expectedWord) || isArticleWord(responseWord)) {
+      continue;
+    }
+
+    if (expectedWord.toLowerCase() !== responseWord.toLowerCase() && similarity(expectedWord, responseWord) >= 0.6) {
+      return `The word itself is still off: write "${expectedWord}", not "${responseWord}".`;
+    }
+  }
+
+  return "";
+}
+
+function isArticleWord(word) {
+  return [
+    "ein",
+    "eine",
+    "einen",
+    "einem",
+    "einer",
+    "eines",
+    "der",
+    "die",
+    "das",
+    "den",
+    "dem",
+    "des",
+    "kein",
+    "keine",
+    "keinen",
+    "keinem",
+    "keiner",
+    "keines"
+  ].includes(String(word || "").toLowerCase());
+}
+
 function buildCorrectAnswerFeedback({ challenge, grade, localCorrect, recordResult }) {
   const base = grade?.feedback || `Correct. ${challenge.explanation}`;
 
@@ -2814,6 +2967,9 @@ function inferRemediationTopicsLocally(challenge, learnerAnswer) {
 
   const spellingMiss = expectedWords.some((word, index) => {
     const responseWord = responseWords[index];
+    if (isArticleWord(word) || isArticleWord(responseWord)) {
+      return false;
+    }
     return responseWord && word.toLowerCase() !== responseWord.toLowerCase() && similarity(word, responseWord) >= 0.6;
   });
   if (spellingMiss) {
