@@ -191,6 +191,17 @@ server.listen(PORT, HOST, () => {
   console.log(`Deutsch Trainer server running on http://${HOST}:${PORT}`);
 });
 
+process.on("SIGTERM", () => {
+  console.log("SIGTERM received, shutting down gracefully.");
+  server.close(() => {
+    process.exit(0);
+  });
+
+  setTimeout(() => {
+    process.exit(0);
+  }, 10000).unref();
+});
+
 async function generateSession(body) {
   const schema = {
     name: "german_session",
