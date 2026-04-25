@@ -943,18 +943,9 @@ function buildExpandedChallengeSet(content) {
     });
   });
 
-  if (supportExamples[0]?.german) {
-    const keyword = pickKeyword(supportExamples[0].german);
-    expanded.push({
-      id: `${content.id}-cloze`,
-      type: "text",
-      prompt: `Type the missing word: ${supportExamples[0].german.replace(keyword, "____")}`,
-      acceptedAnswers: [keyword],
-      answer: keyword,
-      skill: content.focus?.[0] || "grammar",
-      explanation: "This checks if the most important word in the phrase is becoming automatic.",
-      placeholder: "One word"
-    });
+  const clozeChallenge = buildClozeChallengeFromExamples(content, supportExamples);
+  if (clozeChallenge) {
+    expanded.push(clozeChallenge);
   }
 
   if (expanded.length < 5) {
@@ -995,6 +986,88 @@ function pickKeyword(sentence) {
     .filter(Boolean)
     .sort((left, right) => right.length - left.length);
   return tokens[0] || sentence;
+}
+
+function buildClozeChallengeFromExamples(content, supportExamples) {
+  if (!supportExamples[0]?.german) {
+    return null;
+  }
+
+  const primary = supportExamples[0].german;
+  const primaryTokens = splitGermanTokens(primary);
+  let keywordIndex = primaryTokens.findIndex((token) => isMeaningfulClozeWord(token));
+  let acceptedAnswers = [];
+
+  supportExamples.slice(1).some((example) => {
+    const candidateTokens = splitGermanTokens(example.german);
+    if (candidateTokens.length !== primaryTokens.length) {
+      return false;
+    }
+
+    const differingIndexes = primaryTokens.reduce((indexes, token, index) => {
+      if (normalizeGerman(token) !== normalizeGerman(candidateTokens[index])) {
+        indexes.push(index);
+      }
+      return indexes;
+    }, []);
+
+    if (differingIndexes.length !== 1) {
+      return false;
+    }
+
+    const [index] = differingIndexes;
+    if (!isMeaningfulClozeWord(primaryTokens[index]) || !isMeaningfulClozeWord(candidateTokens[index])) {
+      return false;
+    }
+
+    keywordIndex = index;
+    acceptedAnswers = supportExamples
+      .map((item) => splitGermanTokens(item.german))
+      .filter((tokens) => tokens.length === primaryTokens.length)
+      .filter((tokens) => primaryTokens.every((token, tokenIndex) => {
+        return tokenIndex === index || normalizeGerman(token) === normalizeGerman(tokens[tokenIndex]);
+      }))
+      .map((tokens) => tokens[index])
+      .filter(Boolean);
+    return acceptedAnswers.length > 1;
+  });
+
+  if (keywordIndex === -1) {
+    const keyword = pickKeyword(primary);
+    keywordIndex = primaryTokens.findIndex((token) => normalizeGerman(token) === normalizeGerman(keyword));
+    acceptedAnswers = [keyword];
+  } else if (!acceptedAnswers.length) {
+    acceptedAnswers = [primaryTokens[keywordIndex]];
+  }
+
+  const promptTokens = [...primaryTokens];
+  const answer = primaryTokens[keywordIndex];
+  promptTokens[keywordIndex] = "____";
+
+  return {
+    id: `${content.id}-cloze`,
+    type: "text",
+    prompt: `Type the missing word: ${promptTokens.join(" ")}`,
+    acceptedAnswers: [...new Set(acceptedAnswers)],
+    answer,
+    skill: content.focus?.[0] || "grammar",
+    explanation: acceptedAnswers.length > 1
+      ? "More than one natural completion fits this sentence frame, so any taught lesson variant counts."
+      : "This checks if the most important word in the phrase is becoming automatic.",
+    placeholder: "One word"
+  };
+}
+
+function splitGermanTokens(sentence) {
+  return String(sentence || "")
+    .replace(/[.,!?]/g, "")
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function isMeaningfulClozeWord(word) {
+  const normalized = normalizeGerman(word);
+  return normalized.length >= 3 && !isArticleWord(normalized);
 }
 
 function loadProgress() {
