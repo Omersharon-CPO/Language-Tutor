@@ -3224,6 +3224,8 @@ function buildSessionChallengeQueue(content, options = {}) {
     id: challenge.id || `${content.id}-${index}`
   }));
 
+  challenges = ensureVocabularyChallenge(content, challenges);
+
   if (options.reviewMode && options.reviewSkills?.length) {
     const skillPriority = options.reviewSkills;
     challenges = [...challenges].sort((left, right) => {
@@ -3238,6 +3240,66 @@ function buildSessionChallengeQueue(content, options = {}) {
   const focusSet = new Set(options.reviewSkills || []);
   const focused = challenges.filter((challenge) => focusSet.has(challenge.skill));
   return focused.length ? [...focused, ...challenges].slice(0, 6) : challenges;
+}
+
+function ensureVocabularyChallenge(content, challenges) {
+  if (challenges.some((challenge) => challenge.skill === "vocabulary")) {
+    return challenges;
+  }
+
+  const generated = buildFallbackVocabularyChallenge(content, challenges.length);
+  return generated ? [...challenges, generated] : challenges;
+}
+
+function buildFallbackVocabularyChallenge(content, index) {
+  const sourceItems = [
+    ...(content.points || []),
+    ...((content.grammar && content.grammar.examples) || [])
+  ].filter((item) => item?.german && item?.english);
+
+  if (!sourceItems.length) {
+    return null;
+  }
+
+  const target = sourceItems[0];
+  const distractors = sourceItems
+    .slice(1)
+    .map((item) => item.english)
+    .filter((english) => english && english !== target.english)
+    .slice(0, 3);
+
+  const genericDistractors = [
+    "I need more time.",
+    "I am already at home.",
+    "Could you help me?",
+    "That sounds expensive.",
+    "We spoke yesterday."
+  ].filter((english) => english !== target.english && !distractors.includes(english));
+
+  const options = shuffleArray([
+    target.english,
+    ...distractors,
+    ...genericDistractors
+  ]).slice(0, 4);
+
+  return {
+    id: `${content.id}-vocabulary-${index}`,
+    type: "choice",
+    prompt: `What is the best translation of: ${target.german}`,
+    options,
+    answer: target.english,
+    skill: "vocabulary",
+    explanation: `This vocabulary item is central to the lesson, so you should recognize "${target.german}" immediately.`
+  };
+}
+
+function shuffleArray(items) {
+  const copy = [...items];
+  for (let index = copy.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [copy[index], copy[swapIndex]] = [copy[swapIndex], copy[index]];
+  }
+  return copy;
 }
 
 function getRecommendation() {
