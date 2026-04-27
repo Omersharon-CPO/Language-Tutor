@@ -41,6 +41,30 @@ const CLOZE_STOPWORDS = new Set([
   "von",
   "zu"
 ]);
+const REMEDIATION_STOPWORDS = new Set([
+  "ich",
+  "du",
+  "er",
+  "sie",
+  "es",
+  "wir",
+  "ihr",
+  "war",
+  "bin",
+  "ist",
+  "habe",
+  "haben",
+  "hat",
+  "und",
+  "oder",
+  "im",
+  "in",
+  "am",
+  "an",
+  "zu",
+  "von",
+  "nach"
+]);
 const LEVEL_NOUN_BANK = {
   A1: [
     { german: "der Kaffee", english: "coffee" },
@@ -2910,6 +2934,70 @@ function buildFixedPhraseExplanation(normalizedExpected, normalizedResponse) {
   return "";
 }
 
+function isWordOrderTopic(topic) {
+  const topicText = `${topic?.key || ""} ${topic?.title || ""} ${topic?.description || ""}`.toLowerCase();
+  return topicText.includes("wortstellung")
+    || topicText.includes("verb-zweit")
+    || topicText.includes("inversion")
+    || topicText.includes("word order")
+    || topicText.includes("verb second");
+}
+
+function findTemporalPhrase(sentence) {
+  const normalized = normalizeGerman(sentence);
+  const phrases = [
+    "nach dem mittagessen",
+    "am wochenende",
+    "gestern",
+    "heute",
+    "danach",
+    "morgens",
+    "abends"
+  ];
+
+  return phrases.find((phrase) => normalized.includes(phrase)) || "";
+}
+
+function frontTimePhraseWithInversion(sentence) {
+  const temporalPhrase = findTemporalPhrase(sentence);
+  if (!temporalPhrase) {
+    return "";
+  }
+
+  const normalized = normalizeGerman(sentence);
+  const parts = normalized.split(" ").filter(Boolean);
+  const temporalTokens = temporalPhrase.split(" ");
+  const temporalStartIndex = parts.findIndex((_, index) => {
+    return temporalTokens.every((token, offset) => parts[index + offset] === token);
+  });
+
+  if (temporalStartIndex === -1) {
+    return "";
+  }
+
+  const prefix = parts.slice(0, temporalStartIndex);
+  const suffix = parts.slice(temporalStartIndex + temporalTokens.length);
+  if (!prefix.length || !suffix.length) {
+    return titleCaseTemporalPhrase(temporalPhrase);
+  }
+
+  const finiteVerb = prefix[prefix.length - 1];
+  const subject = prefix.slice(0, prefix.length - 1).join(" ");
+  const rebuilt = [
+    titleCaseTemporalPhrase(temporalPhrase),
+    finiteVerb,
+    subject,
+    ...suffix
+  ].filter(Boolean).join(" ");
+
+  return rebuilt.charAt(0).toUpperCase() + rebuilt.slice(1) + ".";
+}
+
+function titleCaseTemporalPhrase(phrase) {
+  const lower = String(phrase || "").toLowerCase();
+  return lower.charAt(0).toUpperCase() + lower.slice(1);
+}
+
 function buildCapitalizationExplanation(expectedWords, responseWords) {
   for (let index = 0; index < expectedWords.length; index += 1) {
     const expectedWord = expectedWords[index];
@@ -3208,6 +3296,10 @@ function selectFallbackRemediationAnswer(challenge, topic) {
     return titleCaseGermanNouns(challenge.answer);
   }
 
+  if (isWordOrderTopic(topic)) {
+    return frontTimePhraseWithInversion(challenge.answer) || challenge.answer;
+  }
+
   return challenge.answer;
 }
 
@@ -3253,6 +3345,19 @@ function buildFallbackRemediationPrompt(challenge, topic, index) {
       `Type the full German wording for: ${englishCue}`
     ];
     return variants[index % variants.length];
+  }
+
+  if (isWordOrderTopic(topic)) {
+    const target = frontTimePhraseWithInversion(challenge.answer);
+    const timePhrase = findTemporalPhrase(challenge.answer);
+    if (target && timePhrase) {
+      const variants = [
+        `Rewrite this so it starts with "${titleCaseTemporalPhrase(timePhrase)}" and keeps the verb in second position: ${challenge.answer}`,
+        `Move "${titleCaseTemporalPhrase(timePhrase)}" to the front and keep German verb-second order: ${challenge.answer}`,
+        `Type the sentence with "${titleCaseTemporalPhrase(timePhrase)}" first and the verb in second position: ${challenge.answer}`
+      ];
+      return variants[index % variants.length];
+    }
   }
 
   return `Correct this weak spot (${topic.title.toLowerCase()}): ${challenge.prompt}`;
@@ -3351,15 +3456,22 @@ function selectTopicSourceItems(session, topic, challenge) {
   const challengeWords = new Set(
     normalizeGerman(challenge.answer)
       .split(" ")
-      .filter((word) => word.length > 2)
+      .filter((word) => word.length > 2 && !REMEDIATION_STOPWORDS.has(word))
   );
   const topicText = `${topic.title} ${topic.description} ${topic.learnerPattern || ""}`.toLowerCase();
+  const wordOrderTopic = isWordOrderTopic(topic);
+  const targetTemporalPhrase = findTemporalPhrase(challenge.answer);
 
   const focused = allItems.filter((item) => {
     const itemGerman = normalizeGerman(item.german);
     const sharesWord = [...challengeWords].some((word) => itemGerman.includes(word));
     if (sharesWord) {
       return true;
+    }
+
+    if (wordOrderTopic) {
+      const itemTemporalPhrase = findTemporalPhrase(item.german);
+      return Boolean(targetTemporalPhrase && itemTemporalPhrase && itemTemporalPhrase === targetTemporalPhrase);
     }
 
     if (topicText.includes("capital") || topic.key === "capitalization") {
@@ -3372,6 +3484,13 @@ function selectTopicSourceItems(session, topic, challenge) {
 
     return false;
   });
+
+  if (wordOrderTopic) {
+    return focused.length ? focused.slice(0, 4) : [{
+      german: challenge.answer,
+      english: challenge.prompt.replace(/^Type the German sentence for:\s*/i, "").trim()
+    }];
+  }
 
   return focused.length ? focused.slice(0, 6) : allItems.slice(0, 4);
 }
