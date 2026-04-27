@@ -6,6 +6,50 @@ const skillLabels = {
   speaking: "Speaking",
   reading: "Reading"
 };
+const LESSON_QUESTION_TARGET = 20;
+const QUESTIONS_PER_FORMAT = 4;
+const LEVEL_NOUN_BANK = {
+  A1: [
+    { german: "der Kaffee", english: "coffee" },
+    { german: "der Tee", english: "tea" },
+    { german: "das Wasser", english: "water" },
+    { german: "der Name", english: "name" },
+    { german: "das Land", english: "country" },
+    { german: "die Stadt", english: "city" },
+    { german: "der Preis", english: "price" },
+    { german: "der Euro", english: "euro" }
+  ],
+  A2: [
+    { german: "der Morgen", english: "morning" },
+    { german: "der Abend", english: "evening" },
+    { german: "das Wochenende", english: "weekend" },
+    { german: "das Mittagessen", english: "lunch" },
+    { german: "das Kino", english: "cinema" },
+    { german: "das Haus", english: "house" },
+    { german: "die Freunde", english: "friends" },
+    { german: "die Zeit", english: "time" }
+  ],
+  B1: [
+    { german: "die Idee", english: "idea" },
+    { german: "die Meinung", english: "opinion" },
+    { german: "das Problem", english: "problem" },
+    { german: "die Buchung", english: "booking" },
+    { german: "die Rechnung", english: "invoice" },
+    { german: "die Hilfe", english: "help" },
+    { german: "das Formular", english: "form" },
+    { german: "die Zeit", english: "time" }
+  ],
+  B2: [
+    { german: "das Risiko", english: "risk" },
+    { german: "der Vorteil", english: "advantage" },
+    { german: "das Argument", english: "argument" },
+    { german: "die Entscheidung", english: "decision" },
+    { german: "der Stand", english: "status" },
+    { german: "die Rückmeldung", english: "reply" },
+    { german: "die Unterlage", english: "document" },
+    { german: "die Anfrage", english: "request" }
+  ]
+};
 
 const lessons = [
   {
@@ -910,66 +954,49 @@ function bindEvents() {
 
 function normalizeContentLibraries() {
   lessons.forEach((lesson) => {
+    lesson.challengeBlueprints = lesson.challengeBlueprints || lesson.challenges;
     lesson.challenges = buildExpandedChallengeSet(lesson);
   });
 
   Object.values(qualificationTests).forEach((test) => {
+    test.challengeBlueprints = test.challengeBlueprints || test.challenges;
     test.challenges = buildExpandedChallengeSet(test);
   });
 }
 
 function buildExpandedChallengeSet(content) {
-  const baseChallenges = (content.challenges || []).map((challenge) => ({
+  const baseChallenges = (content.challengeBlueprints || content.challenges || []).map((challenge, index) => ({
     type: challenge.type || "choice",
+    id: challenge.id || `${content.id}-base-${index}`,
     ...challenge
   }));
-  const expanded = [...baseChallenges];
-  const supportExamples = [...(content.points || []), ...((content.grammar && content.grammar.examples) || [])];
+  const sentenceItems = buildSentenceItems(content);
+  const nounItems = buildNounItems(content, sentenceItems);
+  const expanded = [];
 
-  supportExamples.slice(0, 2).forEach((example, index) => {
-    if (!example.german || !example.english) {
-      return;
-    }
+  const multipleChoice = buildMultipleChoiceChallenges(content, baseChallenges, sentenceItems);
+  const cloze = sentenceItems
+    .slice(0, QUESTIONS_PER_FORMAT)
+    .map((item, index) => buildClozeChallengeForItem(content, sentenceItems, item, index))
+    .filter(Boolean);
+  const germanTranslation = sentenceItems
+    .slice(0, QUESTIONS_PER_FORMAT)
+    .map((item, index) => buildGermanTranslationChallenge(content, item, index));
+  const englishTranslation = sentenceItems
+    .slice(0, QUESTIONS_PER_FORMAT)
+    .map((item, index) => buildEnglishTranslationChallenge(content, item, index));
+  const nounMeaning = nounItems
+    .slice(0, QUESTIONS_PER_FORMAT)
+    .map((item, index) => buildNounMeaningChallenge(content, item, index));
 
-    expanded.push({
-      id: `${content.id}-typed-${index}`,
-      type: "text",
-      prompt: `Type the German sentence for: ${example.english}`,
-      acceptedAnswers: [example.german],
-      answer: example.german,
-      skill: content.focus?.[index % content.focus.length] || "speaking",
-      explanation: "Typing the full sentence helps move the phrase from recognition into recall.",
-      placeholder: "Type the German phrase here"
-    });
-  });
-
-  const clozeChallenge = buildClozeChallengeFromExamples(content, supportExamples);
-  if (clozeChallenge) {
-    expanded.push(clozeChallenge);
-  }
-
-  if (expanded.length < 5) {
-    baseChallenges.slice(0, 2).forEach((challenge, index) => {
-      expanded.push({
-        id: `${content.id}-answer-${index}`,
-        type: "text",
-        prompt: `Type the correct answer for: ${challenge.prompt}`,
-        acceptedAnswers: [challenge.answer],
-        answer: challenge.answer,
-        skill: challenge.skill,
-        explanation: "This follow-up turns recognition into active recall.",
-        placeholder: "Type the best answer"
-      });
-    });
-  }
-
-  return dedupeChallenges(expanded);
+  expanded.push(...multipleChoice, ...cloze, ...germanTranslation, ...englishTranslation, ...nounMeaning);
+  return dedupeChallenges(expanded).slice(0, LESSON_QUESTION_TARGET);
 }
 
 function dedupeChallenges(challenges) {
   const seen = new Set();
   return challenges.filter((challenge) => {
-    const key = `${challenge.prompt}-${challenge.answer || challenge.acceptedAnswers?.[0] || ""}`;
+    const key = buildChallengeSignature(challenge);
     if (seen.has(key)) {
       return false;
     }
@@ -977,6 +1004,157 @@ function dedupeChallenges(challenges) {
     seen.add(key);
     return true;
   });
+}
+
+function buildSentenceItems(content) {
+  const items = [...(content.points || []), ...((content.grammar && content.grammar.examples) || [])]
+    .filter((item) => item?.german && item?.english)
+    .map((item, index) => ({
+      ...item,
+      sourceKey: `${content.id}-sentence-${normalizeGerman(item.german)}-${index}`
+    }));
+
+  if (items.length >= QUESTIONS_PER_FORMAT) {
+    return items;
+  }
+
+  const fallbackFromChallenges = (content.challengeBlueprints || content.challenges || [])
+    .map((challenge, index) => {
+      const english = challenge.prompt?.replace(/^Type the German sentence for:\s*/i, "").trim();
+      if (!challenge.answer || !english || english === challenge.prompt) {
+        return null;
+      }
+      return {
+        german: challenge.answer,
+        english,
+        sourceKey: `${content.id}-challenge-sentence-${index}`
+      };
+    })
+    .filter(Boolean);
+
+  return [...items, ...fallbackFromChallenges].slice(0, QUESTIONS_PER_FORMAT + 1);
+}
+
+function buildMultipleChoiceChallenges(content, baseChallenges, sentenceItems) {
+  const preparedBase = baseChallenges
+    .filter((challenge) => challenge.type === "choice")
+    .slice(0, QUESTIONS_PER_FORMAT)
+    .map((challenge, index) => ({
+      ...challenge,
+      formatKey: "multiple-choice",
+      sourceKey: challenge.sourceKey || `${content.id}-choice-${normalizeGerman(challenge.prompt || challenge.answer || String(index))}`
+    }));
+
+  if (preparedBase.length >= QUESTIONS_PER_FORMAT) {
+    return preparedBase;
+  }
+
+  const generated = sentenceItems
+    .slice(0, QUESTIONS_PER_FORMAT - preparedBase.length)
+    .map((item, index) => buildGeneratedChoiceChallenge(content, sentenceItems, item, index))
+    .filter(Boolean);
+
+  return [...preparedBase, ...generated];
+}
+
+function buildGeneratedChoiceChallenge(content, sentenceItems, item, index) {
+  const distractors = sentenceItems
+    .map((candidate) => candidate.english)
+    .filter((english) => english && english !== item.english)
+    .slice(0, 3);
+  const genericDistractors = [
+    "I need more time.",
+    "We spoke yesterday.",
+    "Could you help me?",
+    "That is too expensive."
+  ].filter((english) => english !== item.english && !distractors.includes(english));
+  const options = shuffleArray([item.english, ...distractors, ...genericDistractors]).slice(0, 4);
+
+  return {
+    id: `${content.id}-choice-generated-${index}`,
+    type: "choice",
+    prompt: `Choose the best English translation for: ${item.german}`,
+    options,
+    answer: item.english,
+    skill: "vocabulary",
+    explanation: "This checks whether you recognize the lesson phrase quickly and accurately.",
+    formatKey: "multiple-choice",
+    sourceKey: item.sourceKey
+  };
+}
+
+function buildGermanTranslationChallenge(content, item, index) {
+  return {
+    id: `${content.id}-translate-de-${index}`,
+    type: "text",
+    prompt: `Type in German: ${item.english}`,
+    acceptedAnswers: [item.german],
+    answer: item.german,
+    skill: content.focus?.[index % content.focus.length] || "speaking",
+    explanation: "Producing the full German sentence builds active recall.",
+    placeholder: "Type the German sentence",
+    formatKey: "translate-to-german",
+    sourceKey: item.sourceKey
+  };
+}
+
+function buildEnglishTranslationChallenge(content, item, index) {
+  return {
+    id: `${content.id}-translate-en-${index}`,
+    type: "text",
+    prompt: `Type in English: ${item.german}`,
+    acceptedAnswers: [item.english],
+    answer: item.english,
+    skill: "reading",
+    explanation: "This checks whether you can unpack the meaning of the German sentence precisely.",
+    placeholder: "Type the English translation",
+    formatKey: "translate-to-english",
+    sourceKey: item.sourceKey
+  };
+}
+
+function buildNounItems(content, sentenceItems) {
+  const extracted = [];
+  sentenceItems.forEach((item) => {
+    splitGermanTokens(item.german).forEach((token) => {
+      const lexiconItem = lookupNounLexicon(token, content.level);
+      if (lexiconItem) {
+        extracted.push({
+          ...lexiconItem,
+          sourceKey: `${content.id}-noun-${normalizeGerman(lexiconItem.german)}`
+        });
+      }
+    });
+  });
+
+  const fallback = (LEVEL_NOUN_BANK[content.level] || []).map((item) => ({
+    ...item,
+    sourceKey: `${content.id}-noun-${normalizeGerman(item.german)}`
+  }));
+
+  const seen = new Set();
+  return [...extracted, ...fallback].filter((item) => {
+    if (seen.has(item.sourceKey)) {
+      return false;
+    }
+    seen.add(item.sourceKey);
+    return true;
+  });
+}
+
+function buildNounMeaningChallenge(content, item, index) {
+  return {
+    id: `${content.id}-noun-${index}`,
+    type: "text",
+    prompt: `Type in English: ${item.german}`,
+    acceptedAnswers: [item.english],
+    answer: item.english,
+    skill: "vocabulary",
+    explanation: "Noun meanings should become automatic together with their article.",
+    placeholder: "Type the English word",
+    formatKey: "word-meaning-article",
+    sourceKey: item.sourceKey
+  };
 }
 
 function pickKeyword(sentence) {
@@ -988,12 +1166,12 @@ function pickKeyword(sentence) {
   return tokens[0] || sentence;
 }
 
-function buildClozeChallengeFromExamples(content, supportExamples) {
-  if (!supportExamples[0]?.german) {
+function buildClozeChallengeForItem(content, supportExamples, item, index) {
+  if (!item?.german) {
     return null;
   }
 
-  const primary = supportExamples[0].german;
+  const primary = item.german;
   const primaryTokens = splitGermanTokens(primary);
   let keywordIndex = primaryTokens.findIndex((token) => isMeaningfulClozeWord(token));
   let acceptedAnswers = [];
@@ -1045,16 +1223,18 @@ function buildClozeChallengeFromExamples(content, supportExamples) {
   promptTokens[keywordIndex] = "____";
 
   return {
-    id: `${content.id}-cloze`,
+    id: `${content.id}-cloze-${index}`,
     type: "text",
     prompt: `Type the missing word: ${promptTokens.join(" ")}`,
     acceptedAnswers: [...new Set(acceptedAnswers)],
     answer,
     skill: content.focus?.[0] || "grammar",
     explanation: acceptedAnswers.length > 1
-      ? "More than one natural completion fits this sentence frame, so any taught lesson variant counts."
+      ? "More than one taught lesson variant fits this sentence frame, so any natural completion counts."
       : "This checks if the most important word in the phrase is becoming automatic.",
-    placeholder: "One word"
+    placeholder: "Type the missing German word",
+    formatKey: "complete-german-sentence",
+    sourceKey: item.sourceKey || `${content.id}-cloze-${normalizeGerman(primary)}`
   };
 }
 
@@ -1068,6 +1248,14 @@ function splitGermanTokens(sentence) {
 function isMeaningfulClozeWord(word) {
   const normalized = normalizeGerman(word);
   return normalized.length >= 3 && !isArticleWord(normalized);
+}
+
+function lookupNounLexicon(token, level) {
+  const normalizedToken = String(token || "")
+    .replace(/[.,!?]/g, "")
+    .toLowerCase();
+  const levelItems = LEVEL_NOUN_BANK[level] || [];
+  return levelItems.find((item) => normalizeGerman(item.german.split(" ")[1] || item.german) === normalizeGerman(normalizedToken)) || null;
 }
 
 function loadProgress() {
@@ -1894,6 +2082,13 @@ function advanceChallenge() {
   }
 
   if (session.challengeIndex === session.challenges.length - 1) {
+    const openTopics = getOpenRemediationTopics(session);
+    if (openTopics.length) {
+      session.remediation.activeTopicId = openTopics.length === 1 ? openTopics[0].id : null;
+      session.remediation.junctionOpen = openTopics.length > 1;
+      renderChallenge();
+      return;
+    }
     void finishSession();
     return;
   }
@@ -1904,6 +2099,14 @@ function advanceChallenge() {
 
 async function finishSession() {
   const session = state.activeSession;
+  const unfinishedDeepDives = Object.values(session.remediation?.topics || {}).filter((topic) => !topic.completed);
+  if (unfinishedDeepDives.length) {
+    session.remediation.activeTopicId = unfinishedDeepDives.length === 1 ? unfinishedDeepDives[0].id : null;
+    session.remediation.junctionOpen = unfinishedDeepDives.length > 1;
+    renderChallenge();
+    return;
+  }
+
   els.nextChallenge.disabled = true;
   els.nextChallenge.textContent = "Calculating score...";
   startChallengeStatusTimer("Final answer received. Calculating your score...");
@@ -1932,10 +2135,6 @@ async function finishSession() {
           ? "Strong finish. A follow-up lesson can stretch you, or you can retry this one."
           : "There are still misses in your weaker skills, so a repeat lesson is worthwhile.";
 
-    const unfinishedDeepDives = Object.values(session.remediation?.topics || {}).filter((topic) => !topic.completed);
-    if (unfinishedDeepDives.length) {
-      adaptation += ` Deep dives are still active in ${unfinishedDeepDives.map((topic) => topic.title.toLowerCase()).join(" and ")}.`;
-    }
   } else {
     const passed = score >= 80 && allSkillBreakdownsAbove(skillBreakdown, 50);
     state.progress.qualification[session.level] = {
@@ -2242,10 +2441,10 @@ async function openRemediationPaths(challenge, learnerAnswer, grade) {
     drilldown = await generateDrilldownWithAPI(challenge, learnerAnswer, grade, freshTopics);
   }
 
-  const topicsToOpen = dedupeRemediationTopicBundles(
-    drilldown?.topics?.length
-      ? drilldown.topics
-      : buildFallbackRemediationTopics(challenge, grade, freshTopics)
+  const fallbackTopics = buildFallbackRemediationTopics(challenge, grade, freshTopics);
+  const topicsToOpen = mergeRemediationTopicBundles(
+    drilldown?.topics?.length ? drilldown.topics : [],
+    fallbackTopics
   );
 
   if (!topicsToOpen.length) {
@@ -2651,6 +2850,11 @@ function buildCorrectAnswerFeedback({ challenge, grade, localCorrect, recordResu
 }
 
 function getNextChallengeLabel(session, challenge, remediationTopic, isLastChallenge) {
+  const openTopics = getOpenRemediationTopics(session);
+  if (isLastChallenge && openTopics.length) {
+    return openTopics.length > 1 ? "Choose next rabbit hole" : "Continue rabbit hole";
+  }
+
   if (isLastChallenge) {
     return "Finish lesson";
   }
@@ -2810,6 +3014,8 @@ function ensureRemediationRunway(session, topicId) {
     acceptedAnswers: [answer],
     options: null,
     placeholder: "Type the corrected German",
+    formatKey: `remediation-${topic.id}`,
+    sourceKey: normalizeGerman(variant.german),
     remediationTopicId: topicId
       };
     })()
@@ -2854,7 +3060,9 @@ function buildFallbackRemediationTopics(challenge, grade, topics) {
         answer,
         acceptedAnswers: [answer],
         options: null,
-        placeholder: "Type the corrected German"
+        placeholder: "Type the corrected German",
+        formatKey: `remediation-${topic.key}`,
+        sourceKey: normalizeGerman(variant.german)
       };
     })
   }));
@@ -2889,11 +3097,27 @@ function buildFallbackRemediationPrompt(challenge, topic, index) {
   }
 
   if (topic.key === "article_case") {
-    return `Type the sentence with the correct article and case: ${challenge.english || challenge.prompt.replace(/^Type the German sentence for:\s*/i, "")}`;
+    const englishCue = challenge.english || challenge.prompt.replace(/^Type the German sentence for:\s*/i, "");
+    const variants = [
+      `Type the sentence with the correct article and case: ${englishCue}`,
+      `Rewrite this with the right article in German: ${englishCue}`,
+      `Fix the article and case in this German sentence: ${englishCue}`,
+      `Type the natural German phrase with the correct article: ${englishCue}`,
+      `Correct the noun phrase and article here: ${englishCue}`
+    ];
+    return variants[index % variants.length];
   }
 
   if (topic.key === "meaning") {
-    return `Try again with the full natural German phrase: ${challenge.english || challenge.prompt.replace(/^Type the German sentence for:\s*/i, "")}`;
+    const englishCue = challenge.english || challenge.prompt.replace(/^Type the German sentence for:\s*/i, "");
+    const variants = [
+      `Try again with the full natural German phrase: ${englishCue}`,
+      `Type the natural German sentence for: ${englishCue}`,
+      `Write the complete German phrase that fits: ${englishCue}`,
+      `Say this naturally in German: ${englishCue}`,
+      `Type the full German wording for: ${englishCue}`
+    ];
+    return variants[index % variants.length];
   }
 
   return `Correct this weak spot (${topic.title.toLowerCase()}): ${challenge.prompt}`;
@@ -3099,8 +3323,59 @@ function dedupeRemediationTopicBundles(topicBundles) {
   }).filter((topic) => topic.challenges.length);
 }
 
+function mergeRemediationTopicBundles(primaryTopics, fallbackTopics) {
+  const fallbackByKey = new Map(fallbackTopics.map((topic) => [topic.topicKey, topic]));
+  const mergedPrimary = dedupeRemediationTopicBundles(primaryTopics).map((topic) => {
+    const fallback = fallbackByKey.get(topic.topicKey);
+    const combined = dedupeRemediationTopicBundles([{
+      ...topic,
+      challenges: [...topic.challenges, ...(fallback?.challenges || [])]
+    }])[0];
+
+    if (!combined) {
+      return null;
+    }
+
+    fallbackByKey.delete(topic.topicKey);
+    return {
+      ...combined,
+      challenges: combined.challenges.slice(0, 5)
+    };
+  }).filter(Boolean);
+
+  const remainingFallback = dedupeRemediationTopicBundles([...fallbackByKey.values()]).map((topic) => ({
+    ...topic,
+    challenges: topic.challenges.slice(0, 5)
+  }));
+
+  return [...mergedPrimary, ...remainingFallback];
+}
+
 function buildChallengeSignature(challenge) {
-  return `${normalizeGerman(challenge.prompt || "")}::${normalizeGerman(challenge.answer || "")}`;
+  const formatKey = challenge.formatKey || inferChallengeFormatKey(challenge);
+  const sourceKey = challenge.sourceKey
+    || normalizeGerman(challenge.answer || challenge.acceptedAnswers?.[0] || challenge.prompt || "");
+  return `${formatKey}::${sourceKey}`;
+}
+
+function inferChallengeFormatKey(challenge) {
+  const prompt = String(challenge.prompt || "").toLowerCase();
+  if (challenge.type === "choice") {
+    return "multiple-choice";
+  }
+  if (prompt.includes("missing word")) {
+    return "complete-german-sentence";
+  }
+  if (prompt.includes("type in german") || prompt.includes("type the german sentence")) {
+    return "translate-to-german";
+  }
+  if (prompt.includes("type in english")) {
+    return "translate-to-english";
+  }
+  if (prompt.includes("der ") || prompt.includes("die ") || prompt.includes("das ")) {
+    return "word-meaning-article";
+  }
+  return challenge.type || "text";
 }
 
 function similarity(left, right) {
@@ -3292,7 +3567,11 @@ function summarizeSessionForAPI(content) {
 }
 
 function buildSessionChallengeQueue(content, options = {}) {
-  let challenges = content.challenges.map((challenge, index) => ({
+  const dedupedIncoming = dedupeChallenges(content.challenges || []);
+  const sourceChallenges = dedupedIncoming.length >= LESSON_QUESTION_TARGET
+    ? dedupedIncoming
+    : buildExpandedChallengeSet(content);
+  let challenges = sourceChallenges.map((challenge, index) => ({
     ...challenge,
     id: challenge.id || `${content.id}-${index}`
   }));
