@@ -391,9 +391,11 @@ async function gradeAnswer(body) {
     "You are grading a learner's German exercise response.",
     "Identify the real origin of the learner's mistake, not just whether it is wrong.",
     "Separate root causes such as spelling, capitalization, article/case choice, word order, verb form, register, gender, preposition, or meaning.",
-    "If the learner has two distinct weak spots, return two remediationTopics.",
+    "If the learner has multiple distinct weak spots, return up to three remediationTopics, ranked by teaching priority.",
     "Whenever correct=false for a typed production answer, remediationTopics must contain at least one concrete drill-down topic.",
     "Grade leniently for punctuation, but treat capitalization or spelling as real issues when they reveal a learnable weak spot.",
+    "Recognize fixed expressions such as 'von zu Hause' and article contractions such as 'im Kino' as grammar/preposition issues, not generic phrase mismatch.",
+    "Do not mark optional fronting choices like 'Morgens arbeite ich ...' versus 'Ich arbeite morgens ...' as wrong if the grammar is otherwise natural.",
     "If the response is close but flawed, set correct=false and score between 40 and 79.",
     "Return concise feedback that sounds like a tutor, not an examiner, and mention the specific weak spots.",
     "Skill impact should be small integers between -6 and 6."

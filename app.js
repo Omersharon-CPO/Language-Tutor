@@ -2698,11 +2698,13 @@ function buildSpecificMistakeSummary(challenge, learnerAnswer, remediationTopics
   const topics = remediationTopics || [];
   const expectedWords = tokenizeGerman(challenge.answer || "");
   const responseWords = tokenizeGerman(learnerAnswer || "");
+  const normalizedExpected = normalizeGerman(challenge.answer || "");
+  const normalizedResponse = normalizeGerman(learnerAnswer || "");
   const topicKeys = new Set(topics.map((topic) => topic.key));
   const details = [];
 
   if (topicKeys.has("article_case")) {
-    const articleExplanation = buildArticleCaseExplanation(expectedWords, responseWords);
+    const articleExplanation = buildArticleCaseExplanation(expectedWords, responseWords, normalizedExpected, normalizedResponse);
     if (articleExplanation) {
       details.push(articleExplanation);
     }
@@ -2723,7 +2725,8 @@ function buildSpecificMistakeSummary(challenge, learnerAnswer, remediationTopics
   }
 
   if (topicKeys.has("meaning")) {
-    details.push("The sentence is understandable, but it does not match the target German phrase closely enough yet.");
+    const fixedPhraseExplanation = buildFixedPhraseExplanation(normalizedExpected, normalizedResponse);
+    details.push(fixedPhraseExplanation || "The sentence is understandable, but it does not match the target German phrase closely enough yet.");
   }
 
   const uniqueDetails = [...new Set(details.filter(Boolean))];
@@ -2741,7 +2744,15 @@ function tokenizeGerman(value) {
     .filter(Boolean);
 }
 
-function buildArticleCaseExplanation(expectedWords, responseWords) {
+function buildArticleCaseExplanation(expectedWords, responseWords, normalizedExpected = "", normalizedResponse = "") {
+  if (normalizedExpected.includes(" im kino") && normalizedResponse.includes(" in kino")) {
+    return "Use \"im Kino\" here, not \"in Kino\", because German contracts \"in dem\" to \"im\" for this place phrase.";
+  }
+
+  if (normalizedExpected.includes("von zu hause") && normalizedResponse.includes("von hause")) {
+    return "Use the fixed phrase \"von zu Hause\", not \"von Hause\", because German says \"work from home\" with \"von zu Hause\".";
+  }
+
   for (let index = 0; index < expectedWords.length; index += 1) {
     const expectedWord = expectedWords[index];
     const responseWord = responseWords[index];
@@ -2770,6 +2781,20 @@ function buildArticleCaseExplanation(expectedWords, responseWords) {
     }
 
     return `The article needs to be "${expectedWord}" here, not ${usedWord}, so the noun phrase sounds natural in German.`;
+  }
+
+  return "";
+}
+
+function buildFixedPhraseExplanation(normalizedExpected, normalizedResponse) {
+  if (normalizedExpected.includes("von zu hause") && normalizedResponse.includes("von hause")) {
+    return "You are missing \"zu\" in the fixed phrase \"von zu Hause\".";
+  }
+
+  if (normalizedExpected.includes(" morgens ") || normalizedExpected.startsWith("morgens ")) {
+    if (normalizedResponse.includes("im morgens")) {
+      return "Use the time phrase \"morgens\" on its own here, not \"im Morgens\".";
+    }
   }
 
   return "";
@@ -3245,13 +3270,50 @@ function inferRemediationTopicsLocally(challenge, learnerAnswer) {
   const expected = challenge.answer || "";
   const response = learnerAnswer || "";
   const topics = [];
-  const expectedWords = expected.replace(/[.,!?]/g, "").split(/\s+/).filter(Boolean);
-  const responseWords = response.replace(/[.,!?]/g, "").split(/\s+/).filter(Boolean);
+  const expectedWords = tokenizeGerman(expected);
+  const responseWords = tokenizeGerman(response);
+  const normalizedExpected = normalizeGerman(expected);
+  const normalizedResponse = normalizeGerman(response);
 
   const capitalizationMiss = expectedWords.some((word, index) => {
     const responseWord = responseWords[index];
     return responseWord && word.toLowerCase() === responseWord.toLowerCase() && word !== responseWord;
   });
+  const fixedPhraseMiss = normalizedExpected.includes("von zu hause") && normalizedResponse.includes("von hause");
+  const contractionMiss = normalizedExpected.includes(" im kino") && normalizedResponse.includes(" in kino");
+  const timePhraseMiss = (normalizedExpected.includes("morgens ") || normalizedExpected.startsWith("morgens "))
+    && normalizedResponse.includes("im morgens");
+
+  if (fixedPhraseMiss) {
+    topics.push({
+      key: "meaning",
+      title: "Fixed phrase: von zu Hause",
+      whyItMatters: "Some German expressions have to be learned as a full chunk, not word by word.",
+      learnerPattern: "You dropped \"zu\" from the fixed phrase \"von zu Hause\".",
+      skill: "grammar"
+    });
+  }
+
+  if (contractionMiss) {
+    topics.push({
+      key: "article_case",
+      title: "Preposition + article: im Kino",
+      whyItMatters: "Place phrases often need a preposition plus article together, and German contracts some of them.",
+      learnerPattern: "You used \"in Kino\" where German needs the contraction \"im Kino\".",
+      skill: "grammar"
+    });
+  }
+
+  if (timePhraseMiss) {
+    topics.push({
+      key: "meaning",
+      title: "Time phrase: morgens",
+      whyItMatters: "Time expressions like \"morgens\" have their own pattern and should not be built with the wrong preposition.",
+      learnerPattern: "You used \"im Morgens\" instead of the natural time phrase \"morgens\".",
+      skill: "grammar"
+    });
+  }
+
   if (capitalizationMiss) {
     topics.push({
       key: "capitalization",
@@ -3279,8 +3341,8 @@ function inferRemediationTopicsLocally(challenge, learnerAnswer) {
     });
   }
 
-  const missingArticle = normalizeGerman(expected).includes(" einen ")
-    && !normalizeGerman(response).includes(" einen ");
+  const missingArticle = normalizedExpected.includes(" einen ")
+    && !normalizedResponse.includes(" einen ");
   if (missingArticle) {
     topics.push({
       key: "article_case",
@@ -3291,7 +3353,7 @@ function inferRemediationTopicsLocally(challenge, learnerAnswer) {
     });
   }
 
-  if (!topics.length && normalizeGerman(response) !== normalizeGerman(expected)) {
+  if (!topics.length && normalizedResponse !== normalizedExpected) {
     topics.push({
       key: "meaning",
       title: "Core phrase choice",
@@ -3301,7 +3363,19 @@ function inferRemediationTopicsLocally(challenge, learnerAnswer) {
     });
   }
 
-  return topics.slice(0, 2);
+  return dedupeRemediationTopics(topics).slice(0, 3);
+}
+
+function dedupeRemediationTopics(topics) {
+  const seen = new Set();
+  return topics.filter((topic) => {
+    const key = `${topic.key}::${topic.title}`;
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 function dedupeRemediationTopicBundles(topicBundles) {
