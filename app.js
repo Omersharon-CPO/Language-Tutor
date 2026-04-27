@@ -8,6 +8,39 @@ const skillLabels = {
 };
 const LESSON_QUESTION_TARGET = 20;
 const QUESTIONS_PER_FORMAT = 4;
+const CLOZE_STOPWORDS = new Set([
+  "ich",
+  "du",
+  "er",
+  "sie",
+  "es",
+  "wir",
+  "ihr",
+  "bin",
+  "bist",
+  "ist",
+  "sind",
+  "seid",
+  "war",
+  "waren",
+  "habe",
+  "hast",
+  "hat",
+  "haben",
+  "habt",
+  "danach",
+  "gestern",
+  "heute",
+  "morgen",
+  "morgens",
+  "abends",
+  "am",
+  "im",
+  "in",
+  "nach",
+  "von",
+  "zu"
+]);
 const LEVEL_NOUN_BANK = {
   A1: [
     { german: "der Kaffee", english: "coffee" },
@@ -990,7 +1023,7 @@ function buildExpandedChallengeSet(content) {
     .map((item, index) => buildNounMeaningChallenge(content, item, index));
 
   expanded.push(...multipleChoice, ...cloze, ...germanTranslation, ...englishTranslation, ...nounMeaning);
-  return dedupeChallenges(expanded).slice(0, LESSON_QUESTION_TARGET);
+  return validateAndRepairChallenges(dedupeChallenges(expanded)).slice(0, LESSON_QUESTION_TARGET);
 }
 
 function dedupeChallenges(challenges) {
@@ -1068,7 +1101,7 @@ function buildGeneratedChoiceChallenge(content, sentenceItems, item, index) {
     "Could you help me?",
     "That is too expensive."
   ].filter((english) => english !== item.english && !distractors.includes(english));
-  const options = shuffleArray([item.english, ...distractors, ...genericDistractors]).slice(0, 4);
+  const options = buildChoiceOptions(item.english, [...distractors, ...genericDistractors]);
 
   return {
     id: `${content.id}-choice-generated-${index}`,
@@ -1173,7 +1206,7 @@ function buildClozeChallengeForItem(content, supportExamples, item, index) {
 
   const primary = item.german;
   const primaryTokens = splitGermanTokens(primary);
-  let keywordIndex = primaryTokens.findIndex((token) => isMeaningfulClozeWord(token));
+  let keywordIndex = selectBestClozeIndex(primaryTokens);
   let acceptedAnswers = [];
 
   supportExamples.slice(1).some((example) => {
@@ -1248,6 +1281,77 @@ function splitGermanTokens(sentence) {
 function isMeaningfulClozeWord(word) {
   const normalized = normalizeGerman(word);
   return normalized.length >= 3 && !isArticleWord(normalized);
+}
+
+function selectBestClozeIndex(tokens) {
+  const candidateIndexes = tokens
+    .map((token, index) => ({ token, index }))
+    .filter(({ token, index }) => {
+      const normalized = normalizeGerman(token);
+      return isMeaningfulClozeWord(token) && index > 0 && !CLOZE_STOPWORDS.has(normalized);
+    })
+    .map(({ index }) => index);
+
+  if (candidateIndexes.length) {
+    return candidateIndexes[candidateIndexes.length - 1];
+  }
+
+  return tokens.findIndex((token, index) => index > 0 && isMeaningfulClozeWord(token));
+}
+
+function buildChoiceOptions(correctAnswer, distractors) {
+  const uniqueDistractors = [...new Set(distractors.filter((option) => option && option !== correctAnswer))];
+  const selectedDistractors = uniqueDistractors.slice(0, 3);
+  const options = shuffleArray([correctAnswer, ...selectedDistractors]);
+
+  while (options.length < 4) {
+    const filler = [
+      "I need more time.",
+      "Could you help me?",
+      "We were at home.",
+      "That is too expensive."
+    ][options.length - 1] || `Alternative ${options.length + 1}`;
+    if (!options.includes(filler) && filler !== correctAnswer) {
+      options.push(filler);
+    }
+  }
+
+  if (!options.includes(correctAnswer)) {
+    options[0] = correctAnswer;
+  }
+
+  return shuffleArray(options).slice(0, 4);
+}
+
+function validateAndRepairChallenges(challenges) {
+  return challenges
+    .map((challenge) => {
+      if (challenge.type === "choice") {
+        const options = [...new Set((challenge.options || []).filter(Boolean))];
+        if (!options.includes(challenge.answer)) {
+          options.push(challenge.answer);
+        }
+        const repaired = {
+          ...challenge,
+          options: shuffleArray(options).slice(0, 4)
+        };
+        if (!repaired.options.includes(repaired.answer)) {
+          repaired.options[0] = repaired.answer;
+        }
+        return repaired;
+      }
+
+      if (challenge.type === "text" && challenge.prompt.toLowerCase().includes("type the missing word")) {
+        const promptBody = challenge.prompt.replace(/^Type the missing word:\s*/i, "");
+        const promptTokens = splitGermanTokens(promptBody);
+        if (promptTokens.indexOf("____") <= 0) {
+          return null;
+        }
+      }
+
+      return challenge;
+    })
+    .filter(Boolean);
 }
 
 function lookupNounLexicon(token, level) {
@@ -2540,14 +2644,16 @@ async function generateDrilldownWithAPI(challenge, learnerAnswer, grade, topics)
 
 function getMainLessonProgress(session) {
   const total = session.mainChallengeIds?.length || session.challenges.filter((challenge) => !challenge.remediationTopicId).length;
-  const answered = new Set(
-    session.answers
-      .filter((answer) => !answer.remediationTopicId)
-      .map((answer) => answer.challengeId)
-  );
+  const answerStates = new Map();
+  session.answers
+    .filter((answer) => !answer.remediationTopicId)
+    .forEach((answer) => {
+      answerStates.set(answer.challengeId, answer.correct ? "correct" : "wrong");
+    });
   return {
-    completed: Math.min(answered.size, total),
-    total: Math.max(1, total)
+    completed: Math.min(answerStates.size, total),
+    total: Math.max(1, total),
+    answerStates
   };
 }
 
@@ -2562,8 +2668,12 @@ function renderLessonProgress(session, activeTopic) {
   for (let index = 0; index < progress.total; index += 1) {
     const segment = document.createElement("span");
     segment.className = "lesson-progress-segment";
-    if (index < progress.completed) {
+    const challengeId = session.mainChallengeIds?.[index];
+    const state = challengeId ? progress.answerStates.get(challengeId) : null;
+    if (state === "correct") {
       segment.classList.add("complete");
+    } else if (state === "wrong") {
+      segment.classList.add("current");
     } else if (index === progress.completed && !activeTopic) {
       segment.classList.add("current");
     }
@@ -3641,7 +3751,7 @@ function summarizeSessionForAPI(content) {
 }
 
 function buildSessionChallengeQueue(content, options = {}) {
-  const dedupedIncoming = dedupeChallenges(content.challenges || []);
+  const dedupedIncoming = validateAndRepairChallenges(dedupeChallenges(content.challenges || []));
   const sourceChallenges = dedupedIncoming.length >= LESSON_QUESTION_TARGET
     ? dedupedIncoming
     : buildExpandedChallengeSet(content);
