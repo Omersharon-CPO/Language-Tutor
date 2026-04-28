@@ -1278,11 +1278,13 @@ function buildClozeChallengeForItem(content, supportExamples, item, index) {
   const promptTokens = [...primaryTokens];
   const answer = primaryTokens[keywordIndex];
   promptTokens[keywordIndex] = "____";
+  const englishCue = deriveClozeEnglishCue(item.english, answer);
+  const cueText = englishCue ? ` (${englishCue})` : "";
 
   return {
     id: `${content.id}-cloze-${index}`,
     type: "text",
-    prompt: `Type the missing word: ${promptTokens.join(" ")}`,
+    prompt: `Type the missing word${cueText}: ${promptTokens.join(" ")}`,
     acceptedAnswers: [...new Set(acceptedAnswers)],
     answer,
     skill: content.focus?.[0] || "grammar",
@@ -1300,6 +1302,50 @@ function splitGermanTokens(sentence) {
     .replace(/[.,!?]/g, "")
     .split(/\s+/)
     .filter(Boolean);
+}
+
+function deriveClozeEnglishCue(englishSentence, answer) {
+  const tokens = String(englishSentence || "")
+    .replace(/[.,!?;:()[\]"]/g, "")
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .filter((token) => ![
+      "i",
+      "you",
+      "he",
+      "she",
+      "we",
+      "they",
+      "it",
+      "a",
+      "an",
+      "the",
+      "at",
+      "in",
+      "on",
+      "from",
+      "to",
+      "that",
+      "this",
+      "after",
+      "of"
+    ].includes(token));
+
+  if (!tokens.length) {
+    return "";
+  }
+
+  if (tokens.length === 1) {
+    return tokens[0];
+  }
+
+  const normalizedAnswer = normalizeGerman(answer);
+  if (normalizedAnswer === "gegangen" || normalizedAnswer === "gefahren") {
+    return tokens.slice(0, 2).join(" ");
+  }
+
+  return tokens[tokens.length - 1];
 }
 
 function isMeaningfulClozeWord(word) {
