@@ -1972,6 +1972,7 @@ function renderSessionContent(session) {
 function renderChallenge() {
   const session = state.activeSession;
   pruneResolvedRemediationChallenges(session);
+  syncRemediationFocus(session);
   if (shouldShowBranchJunction(session)) {
     renderBranchJunction(session);
     return;
@@ -2110,24 +2111,29 @@ async function handleTextChallengeSubmit(event) {
   els.submitAnswer.disabled = true;
   els.submitAnswer.textContent = "Checking answer...";
   els.challengeInput.disabled = true;
-  const localCorrect = evaluateTextAnswer(typedAnswer, challenge);
+  const localEvaluation = evaluateTextAnswerDetailed(typedAnswer, challenge);
+  const localCorrect = localEvaluation.correct;
 
   if (!localCorrect) {
-    state.ui.gradingAnswer = true;
+    state.ui.gradingAnswer = !isEnglishChallenge(challenge);
     startChallengeStatusTimer(
-      state.api.configured ? "Answer received. Checking with AI..." : "Answer received. Checking locally..."
+      isEnglishChallenge(challenge)
+        ? "Answer received. Checking locally..."
+        : state.api.configured
+          ? "Answer received. Checking with AI..."
+          : "Answer received. Checking locally..."
     );
     els.challengeFeedback.textContent = "Your answer was submitted. Grading is in progress.";
   } else {
     els.challengeStatus.textContent = "Answer checked instantly.";
     els.challengeStatus.className = "challenge-status ready";
-    els.challengeFeedback.textContent = "Exact match detected. No AI grading was needed.";
+    els.challengeFeedback.textContent = localEvaluation.feedback || "Exact match detected. No AI grading was needed.";
   }
   els.challengeFeedback.className = "feedback";
 
   let grade = null;
 
-  if (!localCorrect && state.api.configured) {
+  if (!localCorrect && state.api.configured && !isEnglishChallenge(challenge)) {
     grade = await gradeAnswerWithAPI(challenge, typedAnswer);
   }
   state.ui.gradingAnswer = false;
@@ -2144,13 +2150,16 @@ async function handleTextChallengeSubmit(event) {
       challenge,
       grade,
       localCorrect,
-      recordResult
+      recordResult,
+      localFeedback: localEvaluation.feedback
     });
     els.challengeFeedback.className = "feedback success";
   } else {
-    const remediationTopics = grade?.remediationTopics?.length
-      ? grade.remediationTopics
-      : inferRemediationTopicsLocally(challenge, typedAnswer);
+    const remediationTopics = isEnglishChallenge(challenge)
+      ? []
+      : grade?.remediationTopics?.length
+        ? grade.remediationTopics
+        : inferRemediationTopicsLocally(challenge, typedAnswer);
     if (remediationTopics.length) {
       openedDeepDive = await openRemediationPaths(challenge, typedAnswer, {
         ...grade,
@@ -2228,9 +2237,20 @@ function recordChallengeAnswer(challenge, correct, response, grade = null) {
 }
 
 function evaluateTextAnswer(response, challenge) {
+  return evaluateTextAnswerDetailed(response, challenge).correct;
+}
+
+function evaluateTextAnswerDetailed(response, challenge) {
+  if (isEnglishChallenge(challenge)) {
+    return evaluateEnglishAnswerDetailed(response, challenge);
+  }
+
   const acceptedAnswers = challenge.acceptedAnswers || [challenge.answer];
   const normalizedResponse = normalizeGerman(response);
-  return acceptedAnswers.some((answer) => normalizeGerman(answer) === normalizedResponse);
+  return {
+    correct: acceptedAnswers.some((answer) => normalizeGerman(answer) === normalizedResponse),
+    feedback: ""
+  };
 }
 
 function normalizeGerman(value) {
@@ -2244,11 +2264,106 @@ function normalizeGerman(value) {
     .trim();
 }
 
+function normalizeEnglish(value) {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[.,!?;:"]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function tokenizeEnglish(value) {
+  return normalizeEnglish(value)
+    .split(" ")
+    .filter(Boolean);
+}
+
+function isEnglishChallenge(challenge) {
+  const formatKey = challenge?.formatKey || inferChallengeFormatKey(challenge || {});
+  return formatKey === "translate-to-english" || formatKey === "word-meaning-article";
+}
+
+function toEnglishContentSignature(value) {
+  const stopwords = new Set([
+    "i",
+    "you",
+    "he",
+    "she",
+    "we",
+    "they",
+    "it",
+    "a",
+    "an",
+    "the",
+    "at",
+    "in",
+    "on",
+    "to",
+    "of",
+    "for",
+    "that",
+    "this",
+    "have",
+    "has",
+    "had",
+    "am",
+    "is",
+    "are",
+    "was",
+    "were",
+    "be",
+    "been"
+  ]);
+
+  return tokenizeEnglish(value)
+    .filter((token) => !stopwords.has(token))
+    .join(" ");
+}
+
+function evaluateEnglishAnswerDetailed(response, challenge) {
+  const acceptedAnswers = challenge.acceptedAnswers || [challenge.answer];
+  const normalizedResponse = normalizeEnglish(response);
+  if (acceptedAnswers.some((answer) => normalizeEnglish(answer) === normalizedResponse)) {
+    return {
+      correct: true,
+      feedback: "Accepted. Your English answer matches the target meaning."
+    };
+  }
+
+  const expected = acceptedAnswers[0] || challenge.answer || "";
+  const expectedSignature = toEnglishContentSignature(expected);
+  const responseSignature = toEnglishContentSignature(response);
+  if (expectedSignature && expectedSignature === responseSignature) {
+    return {
+      correct: true,
+      feedback: `Accepted. Your wording is fine in English, even though the lesson phrase is "${expected}".`
+    };
+  }
+
+  const expectedTokens = tokenizeEnglish(expected);
+  const responseTokens = tokenizeEnglish(response);
+  const caseOnlyDifference = expectedTokens.length === responseTokens.length
+    && expectedTokens.every((token, index) => token === responseTokens[index]);
+  if (caseOnlyDifference) {
+    return {
+      correct: true,
+      feedback: "Accepted. Small English capitalization differences do not need a rabbit hole here."
+    };
+  }
+
+  return {
+    correct: false,
+    feedback: ""
+  };
+}
+
 function advanceChallenge() {
   const session = state.activeSession;
   if (!session) {
     return;
   }
+
+  syncRemediationFocus(session);
 
   if (shouldShowBranchJunction(session)) {
     renderChallenge();
@@ -3099,11 +3214,11 @@ function isArticleWord(word) {
   ].includes(String(word || "").toLowerCase());
 }
 
-function buildCorrectAnswerFeedback({ challenge, grade, localCorrect, recordResult }) {
+function buildCorrectAnswerFeedback({ challenge, grade, localCorrect, recordResult, localFeedback = "" }) {
   const base = grade?.feedback || `Correct. ${challenge.explanation}`;
 
   if (!challenge.remediationTopicId) {
-    return localCorrect ? `Correct. ${challenge.explanation}` : base;
+    return localCorrect ? (localFeedback || `Correct. ${challenge.explanation}`) : base;
   }
 
   if (recordResult?.topicCompleted) {
@@ -3137,6 +3252,48 @@ function getNextChallengeLabel(session, challenge, remediationTopic, isLastChall
   }
 
   return "Continue rabbit hole";
+}
+
+function syncRemediationFocus(session) {
+  const openTopics = getOpenRemediationTopics(session);
+  if (!openTopics.length) {
+    session.remediation.activeTopicId = null;
+    session.remediation.junctionOpen = false;
+    return;
+  }
+
+  if (session.remediation.junctionOpen) {
+    if (openTopics.length <= 1) {
+      session.remediation.junctionOpen = false;
+      session.remediation.activeTopicId = openTopics[0]?.id || null;
+    }
+    return;
+  }
+
+  if (!session.remediation.activeTopicId || session.remediation.topics[session.remediation.activeTopicId]?.completed) {
+    session.remediation.activeTopicId = openTopics.length === 1 ? openTopics[0].id : null;
+    session.remediation.junctionOpen = openTopics.length > 1;
+  }
+
+  const activeTopicId = session.remediation.activeTopicId;
+  if (!activeTopicId) {
+    return;
+  }
+
+  const currentChallenge = session.challenges[session.challengeIndex];
+  if (currentChallenge?.remediationTopicId === activeTopicId) {
+    return;
+  }
+
+  let targetIndex = findNextActiveBranchChallengeIndex(session, session.challengeIndex, activeTopicId);
+  if (targetIndex === -1) {
+    ensureRemediationRunway(session, activeTopicId);
+    targetIndex = findNextActiveBranchChallengeIndex(session, session.challengeIndex, activeTopicId);
+  }
+
+  if (targetIndex !== -1) {
+    session.challengeIndex = targetIndex;
+  }
 }
 
 async function estimateLevelWithAPI(payload) {
